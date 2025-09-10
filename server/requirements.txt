@@ -13,3 +13,4 @@ langchain-ollama
 aiosqlite
 tavily-python
 langchain-tavily
+modelcontextprotocol

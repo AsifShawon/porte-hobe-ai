@@ -121,88 +121,40 @@ async def health_check():
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
-    """Main chat endpoint that streams thinking and response separately"""
-    
+    """Main chat endpoint streaming thinking tokens first then answer tokens."""
     if tutor_agent is None:
         logger.error("❌ TutorAgent not initialized")
-        raise HTTPException(
-            status_code=503, 
-            detail="AI service is not available. Please try again later."
-        )
-    
-    async def generate_response():
+        raise HTTPException(status_code=503, detail="AI service is not available. Please try again later.")
+
+    async def event_stream():
+        request_id = request.request_id or str(uuid.uuid4())
+        start_ts = asyncio.get_event_loop().time()
         try:
-            # Generate unique request ID
-            request_id = request.request_id or str(uuid.uuid4())
-            timestamp = asyncio.get_event_loop().time()
-            
-            logger.info(f"📝 Received message [ID: {request_id[:8]}...]: {request.message[:50]}...")
-            
-            # Convert frontend history to LangChain format
             langchain_history = convert_history_to_langchain(request.history)
-            messages = langchain_history + [HumanMessage(content=request.message)]
-            
-            thinking_sent = False
-            final_answer = ""
-            thinking_content = ""
-            
-            # Run the agent once and get the complete final state
-            logger.info("� Running agent to get complete response...")
-            final_state = await tutor_agent.graph.ainvoke({"messages": messages})
-            
-            # Extract thinking content first and send it
-            thinking_content = extract_thinking_content(final_state.get("messages", []))
-            if thinking_content:
-                thinking_response = {
-                    "response": "",
-                    "thinking_content": thinking_content,
-                    "type": "thinking",
+            # Stream phases
+            async for evt in tutor_agent.stream_phases(request.message, langchain_history):
+                base = {
                     "request_id": request_id,
-                    "timestamp": str(timestamp)
+                    "timestamp": str(asyncio.get_event_loop().time())
                 }
-                yield f"data: {json.dumps(thinking_response)}\n\n"
-                logger.info(f"📤 Sent thinking content to frontend [ID: {request_id[:8]}...]")
-                # Add delay to ensure thinking is processed first by frontend
-                await asyncio.sleep(1.0)
-            
-            # Extract and send the final answer
-            final_answer = final_state.get("final_answer", "I apologize, but I couldn't process your request right now.")
-            
-            # Send the final response
-            final_response = {
-                "response": final_answer,
-                "thinking_content": "",
-                "type": "response",
+                payload = {**base, **evt}
+                yield f"data: {json.dumps(payload)}\n\n"
+        except Exception as e:
+            logger.exception("Streaming error")
+            err_payload = {
+                "type": "error",
+                "response": "Streaming failed due to an internal error.",
+                "thinking_content": "An exception occurred; please retry.",
                 "request_id": request_id,
                 "timestamp": str(asyncio.get_event_loop().time())
             }
-            yield f"data: {json.dumps(final_response)}\n\n"
-            logger.info(f"📤 Sent final response to frontend [ID: {request_id[:8]}...]")
-            
-            logger.info(f"✅ Successfully processed request [ID: {request_id[:8]}...]")
-            
-        except Exception as e:
-            logger.exception(f"❌ Error processing chat request: {e}")
-            
-            # Send error response
-            error_response = {
-                "response": "I'm experiencing some technical difficulties right now. Please try asking your question again, or rephrase it in a different way.",
-                "thinking_content": "The system encountered an error while processing the request. This could be due to model availability or network issues.",
-                "type": "error",
-                "request_id": request.request_id or str(uuid.uuid4()),
-                "timestamp": str(asyncio.get_event_loop().time())
-            }
-            yield f"data: {json.dumps(error_response)}\n\n"
-    
-    return StreamingResponse(
-        generate_response(),
-        media_type="text/plain",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Content-Type": "text/event-stream"
-        }
-    )
+            yield f"data: {json.dumps(err_payload)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Content-Type": "text/event-stream"
+    })
 
 @app.post("/api/chat/simple", response_model=ChatResponse)
 async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:

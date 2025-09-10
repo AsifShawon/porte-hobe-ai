@@ -70,7 +70,6 @@ export default function ChatPage() {
     setInput('')
     setIsLoading(true)
 
-    // Show initial thinking indicator
     const thinkingId = 'thinking-' + Date.now()
     const initialThinking: Message = {
       id: thinkingId,
@@ -78,197 +77,99 @@ export default function ChatPage() {
       role: 'assistant',
       timestamp: new Date(),
       type: 'thinking',
-      thinking_content: 'Processing your request...'
+      thinking_content: ''
     }
     setCurrentThinkingMessage(initialThinking)
 
     try {
-      // Call the streaming endpoint
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMessage.content,
           history: messages.map(m => ({ role: m.role, content: m.content }))
         }),
       })
 
-      if (!response.ok) {
-        throw new Error('Failed to get response from server')
-      }
+      if (!response.ok || !response.body) throw new Error('Failed to connect')
 
-      const reader = response.body?.getReader()
+      const reader = response.body.getReader()
       const decoder = new TextDecoder()
 
-      if (!reader) {
-        throw new Error('No response stream available')
-      }
-
-      let currentThinkingContent = ''
-      let finalResponse = ''
-      let hasReceivedData = false
+      let thinkingBuffer = ''
+      let answerBuffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
-        
         if (done) break
-
-        const chunk = decoder.decode(value)
-        console.log('Received chunk:', chunk) // Debug log
-        console.log('Chunk length:', chunk.length, 'Contains THINK:', chunk.includes('<THINK>'), 'Contains ANSWER:', chunk.includes('<ANSWER>'))
-        
-        const lines = chunk.split('\n')
-
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split(/\n/).filter(l => l.startsWith('data: '))
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const jsonData = line.slice(6).trim()
-              if (jsonData === '') continue // Skip empty data lines
-              
-              const data = JSON.parse(jsonData)
-              hasReceivedData = true
-              
-              console.log('Parsed SSE data:', data) // Debug log
-              
-              if (data.type === 'thinking' && data.thinking_content) {
-                // Update thinking content in real-time
-                currentThinkingContent = data.thinking_content
-                const updatedThinking: Message = {
-                  ...initialThinking,
-                  thinking_content: currentThinkingContent
-                }
-                setCurrentThinkingMessage(updatedThinking)
-                
-              } else if (data.type === 'response' && data.response) {
-                // Final answer received - create complete message
-                finalResponse = data.response
-                
-                // Clear thinking message and add final message
-                setCurrentThinkingMessage(null)
-                
-                const finalMessage: Message = {
-                  id: (Date.now() + 1).toString(),
-                  content: finalResponse,
+          const jsonStr = line.slice(6).trim()
+          if (!jsonStr) continue
+          try {
+            const evt = JSON.parse(jsonStr)
+            switch (evt.type) {
+              case 'thinking_start': {
+                break
+              }
+              case 'thinking_delta': {
+                thinkingBuffer += evt.delta
+                setCurrentThinkingMessage(prev => prev ? { ...prev, thinking_content: thinkingBuffer } : prev)
+                break
+              }
+              case 'thinking_complete': {
+                thinkingBuffer = evt.thinking_content || thinkingBuffer
+                setCurrentThinkingMessage(prev => prev ? { ...prev, thinking_content: thinkingBuffer } : prev)
+                break
+              }
+              case 'answer_start': {
+                // keep thinking visible until some answer tokens come
+                break
+              }
+              case 'answer_delta': {
+                answerBuffer += evt.delta
+                // Strip any accidental ANSWER tags
+                const cleaned = answerBuffer.replace(/<\/?ANSWER>/g, '')
+                setCurrentThinkingMessage(prev => prev ? { ...prev, content: cleaned } : prev)
+                break
+              }
+              case 'answer_complete': {
+                answerBuffer = (evt.response || answerBuffer).replace(/<\/?ANSWER>/g, '')
+                const finalMsg: Message = {
+                  id: Date.now().toString(),
+                  content: answerBuffer,
                   role: 'assistant',
                   timestamp: new Date(),
                   type: 'complete',
-                  thinking_content: currentThinkingContent
+                  thinking_content: thinkingBuffer
                 }
-                
-                setMessages(prev => [...prev, finalMessage])
+                setCurrentThinkingMessage(null)
+                setMessages(prev => [...prev, finalMsg])
+                break
               }
-            } catch (e) {
-              console.error('Error parsing SSE data:', e, 'Line:', line)
-              
-              // Handle raw streaming response from FastAPI
-              const rawContent = line.slice(6).trim() // Remove 'data: '
-              
-              if (rawContent.includes('<THINK>') || 
-                  rawContent.includes('NEED_SEARCH:') || 
-                  rawContent.includes('SEARCH_QUERY:') ||
-                  rawContent.includes('Phase 1:') ||
-                  rawContent.includes('analyzing') ||
-                  rawContent.includes('planning') ||
-                  rawContent.includes('approach:')) {
-                // This is thinking content
-                const thinkingText = rawContent
-                  .replace(/<\/?THINK>/g, '')
-                  .replace(/NEED_SEARCH:/g, '**🔍 Need to search:**')
-                  .replace(/SEARCH_QUERY:/g, '**🔎 Search query:**')
-                  .replace(/Phase 1:/g, '**📋 Phase 1:**')
-                  .replace(/Phase 2:/g, '**⚡ Phase 2:**')
-                  .replace(/END_OF_THINKING/g, '')
-                  .trim()
-                
-                currentThinkingContent = thinkingText
-                const updatedThinking: Message = {
-                  ...initialThinking,
-                  thinking_content: currentThinkingContent
+              case 'error': {
+                setCurrentThinkingMessage(null)
+                const errMsg: Message = {
+                  id: Date.now().toString(),
+                  content: evt.response || 'Error occurred.',
+                  role: 'assistant',
+                  timestamp: new Date(),
+                  type: 'final_answer'
                 }
-                setCurrentThinkingMessage(updatedThinking)
-                hasReceivedData = true
-                
-              } else if (rawContent.includes('<ANSWER>')) {
-                // This is the final answer
-                const answerContent = rawContent.replace(/<\/?ANSWER>/g, '').trim()
-                
-                // Wait a moment to show thinking, then show final answer
-                setTimeout(() => {
-                  setCurrentThinkingMessage(null)
-                  
-                  const finalMessage: Message = {
-                    id: (Date.now() + 1).toString(),
-                    content: answerContent,
-                    role: 'assistant',
-                    timestamp: new Date(),
-                    type: 'complete',
-                    thinking_content: currentThinkingContent
-                  }
-                  
-                  setMessages(prev => [...prev, finalMessage])
-                }, 1500) // Show thinking for 1.5 seconds before final answer
-                hasReceivedData = true
+                setMessages(prev => [...prev, errMsg])
+                break
               }
             }
+          } catch (e) {
+            console.warn('Bad SSE line', line, e)
           }
         }
       }
 
-      // If we didn't receive any structured data, the stream might be raw text
-      if (!hasReceivedData) {
-        console.log('No structured data received, treating as fallback')
-        throw new Error('No structured streaming data received')
-      }
-
-    } catch (error) {
-      console.error('Error with streaming:', error)
+    } catch (e) {
+      console.error('Streaming failed', e)
       setCurrentThinkingMessage(null)
-      
-      // Try fallback to simple endpoint
-      try {
-        console.log('Trying fallback simple endpoint...')
-        const fallbackResponse = await fetch(`${process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000'}/api/chat/simple`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: userMessage.content,
-            history: messages.map(m => ({ role: m.role, content: m.content }))
-          }),
-        })
-
-        if (fallbackResponse.ok) {
-          const data = await fallbackResponse.json()
-          
-          const finalMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            content: data.response || 'No response received',
-            role: 'assistant',
-            timestamp: new Date(),
-            type: 'complete',
-            thinking_content: data.thinking_content
-          }
-          
-          setMessages(prev => [...prev, finalMessage])
-        } else {
-          throw new Error('Fallback endpoint also failed')
-        }
-      } catch (fallbackError) {
-        console.error('Fallback also failed:', fallbackError)
-        
-        // Final fallback error message
-        const errorMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          content: 'Sorry, I encountered an error connecting to the AI service. Please make sure your FastAPI server is running on localhost:8000 and try again.',
-          role: 'assistant',
-          timestamp: new Date(),
-          type: 'final_answer'
-        }
-        setMessages(prev => [...prev, errorMessage])
-      }
     } finally {
       setIsLoading(false)
     }
@@ -487,37 +388,20 @@ export default function ChatPage() {
             <div className="max-w-[85%] sm:max-w-[75%] lg:max-w-[65%] rounded-lg p-2 sm:p-3 bg-muted">
               <div className="flex items-center gap-2 mb-2">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm text-muted-foreground">AI is thinking...</span>
+                <span className="text-sm text-muted-foreground">AI is thinking & composing...</span>
               </div>
-              {currentThinkingMessage.thinking_content && currentThinkingMessage.thinking_content !== 'Processing your request...' && (
-                <div className="text-xs border-l-2 border-blue-200 dark:border-blue-700 pl-3 mt-2 bg-blue-50/50 dark:bg-blue-950/30 rounded-r-md py-2">
-                  <div className="text-blue-600 dark:text-blue-400 font-medium mb-1">🧠 AI Reasoning Process:</div>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkMath, remarkGfm]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={{
-                      code({className, children, ...props}) {
-                        const match = /language-(\w+)/.exec(className || '')
-                        const language = match ? match[1] : ''
-                        const isInline = !className?.includes('language-')
-                        
-                        if (!isInline && language) {
-                          return <CodeBlock language={language}>{children}</CodeBlock>
-                        }
-                        
-                        return (
-                          <code className="bg-blue-100 dark:bg-blue-900 px-1.5 py-0.5 rounded text-xs font-mono" {...props}>
-                            {children}
-                          </code>
-                        )
-                      },
-                      p: ({children}) => <p className="mb-1 last:mb-0 text-xs text-blue-700 dark:text-blue-300">{children}</p>,
-                      ul: ({children}) => <ul className="list-disc list-inside mb-1 space-y-0.5 text-blue-700 dark:text-blue-300">{children}</ul>,
-                      li: ({children}) => <li className="text-xs">{children}</li>,
-                      strong: ({children}) => <strong className="font-semibold text-blue-800 dark:text-blue-200">{children}</strong>,
-                    }}
-                  >
+              {currentThinkingMessage.thinking_content && (
+                <div className="text-xs border-l-2 border-blue-200 dark:border-blue-700 pl-3 mt-2 bg-blue-50/50 dark:bg-blue-950/30 rounded-r-md py-2 mb-2">
+                  <div className="text-blue-600 dark:text-blue-400 font-medium mb-1">🧠 Reasoning:</div>
+                  <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                     {currentThinkingMessage.thinking_content}
+                  </ReactMarkdown>
+                </div>
+              )}
+              {currentThinkingMessage.content && (
+                <div className="prose dark:prose-invert max-w-none text-sm">
+                  <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                    {currentThinkingMessage.content}
                   </ReactMarkdown>
                 </div>
               )}
