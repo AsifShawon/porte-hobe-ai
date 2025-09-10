@@ -1,0 +1,15 @@
+langchain
+langgraph
+langchain-core
+fastapi[all]
+uvicorn[standard]
+langchain-community
+python-dotenv 
+sentence-transformers
+pypdf
+langchain-google-genai
+pymupdf
+langchain-ollama
+aiosqlite
+tavily-python
+langchain-tavily
