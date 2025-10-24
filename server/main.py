@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -12,6 +12,17 @@ import uuid
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from agent import TutorAgent
+from auth import get_current_user
+from rate_limit import limit_user
+from config import supabase, get_supabase_client
+from embedding_engine import search_user_memory, search_universal_memory, store_user_memory
+from mcp_agents import scraper_agent, file_agent, math_agent, vector_agent
+from html_utils import sanitize_html, generate_teaching_html
+
+# Import new routers
+from file_router import router as file_router
+from progress_router import router as progress_router
+from topic_router import router as topic_router
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -55,6 +66,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Include Routers ---
+app.include_router(file_router)
+app.include_router(progress_router)
+app.include_router(topic_router)
+
 # --- Request/Response Models ---
 class MessageItem(BaseModel):
     role: str  # "user" or "assistant"
@@ -64,6 +80,11 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[MessageItem]] = []
     request_id: Optional[str] = None  # Optional: frontend can provide its own ID
+    topic_id: Optional[str] = None  # Topic context for progress tracking
+    attachments: Optional[List[str]] = []  # Upload IDs to include as context
+    enable_web_search: bool = False  # Enable web scraping
+    enable_math: bool = False  # Enable symbolic math computation
+    response_format: str = "text"  # "text" or "html"
 
 class ChatResponse(BaseModel):
     response: str
@@ -71,6 +92,10 @@ class ChatResponse(BaseModel):
     type: str = "response"
     request_id: str  # Unique identifier for this request
     timestamp: Optional[str] = None
+    response_html: Optional[str] = None  # Sanitized HTML response
+    attachments_used: Optional[List[str]] = []  # Which uploads were used
+    web_sources: Optional[List[dict]] = []  # URLs scraped
+    math_results: Optional[List[dict]] = []  # Math computations
 
 # --- Helper Functions ---
 def convert_history_to_langchain(history: List[MessageItem]) -> List[BaseMessage]:
@@ -120,17 +145,34 @@ async def health_check():
     }
 
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
     """Main chat endpoint streaming thinking tokens first then answer tokens."""
     if tutor_agent is None:
         logger.error("❌ TutorAgent not initialized")
         raise HTTPException(status_code=503, detail="AI service is not available. Please try again later.")
+
+    # Rate limit by user
+    try:
+        limit_user(user["user_id"])  # 20 req/min default
+    except HTTPException as e:
+        raise e
 
     async def event_stream():
         request_id = request.request_id or str(uuid.uuid4())
         start_ts = asyncio.get_event_loop().time()
         try:
             langchain_history = convert_history_to_langchain(request.history)
+            # Save the user message to chat_history (best-effort)
+            try:
+                if supabase is not None:
+                    supabase.table("chat_history").insert({
+                        "user_id": user["user_id"],
+                        "conversation_id": None,
+                        "role": "user",
+                        "message": request.message,
+                    }).execute()
+            except Exception:
+                logger.debug("chat_history insert (user) failed", exc_info=True)
             # Stream phases
             async for evt in tutor_agent.stream_phases(request.message, langchain_history):
                 base = {
@@ -149,6 +191,13 @@ async def chat_endpoint(request: ChatRequest):
                 "timestamp": str(asyncio.get_event_loop().time())
             }
             yield f"data: {json.dumps(err_payload)}\n\n"
+        finally:
+            # Best-effort: store assistant reply and summary into memory
+            # This requires reading the last event from the stream; here we can't,
+            # so the non-streaming endpoint will do the memory upsert. In the
+            # streaming case, we rely on the client to optionally call a dedicated
+            # endpoint in later steps. Left as-is to avoid buffering the stream.
+            pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
@@ -156,9 +205,39 @@ async def chat_endpoint(request: ChatRequest):
         "Content-Type": "text/event-stream"
     })
 
+
+class MemoryAddRequest(BaseModel):
+    query: str
+    response: str
+    summary: str | None = None
+    request_id: str | None = None
+
+
+@app.post("/api/memory/add")
+async def memory_add(req: MemoryAddRequest, user=Depends(get_current_user)):
+    """Store a memory record for the authenticated user.
+
+    Intended to be called by the frontend after a streaming chat completes.
+    """
+    try:
+        limit_user(user["user_id"])  # apply rate limit as well
+        item = store_user_memory(
+            user_id=user["user_id"],
+            query=req.query,
+            response=req.response,
+            summary=(req.summary or req.response[:400]),
+            metadata={"request_id": req.request_id} if req.request_id else None,
+        )
+        return {"ok": True, "item": item}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.exception("/api/memory/add failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/chat/simple", response_model=ChatResponse)
-async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:
-    """Simple non-streaming chat endpoint for fallback"""
+async def chat_simple_endpoint(request: ChatRequest, user=Depends(get_current_user)) -> ChatResponse:
+    """Enhanced chat endpoint with MCP agent integration"""
     
     if tutor_agent is None:
         logger.error("❌ TutorAgent not initialized")
@@ -168,17 +247,144 @@ async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:
         )
     
     try:
+        # Rate limit
+        limit_user(user["user_id"])  
         # Generate unique request ID
         request_id = request.request_id or str(uuid.uuid4())
         timestamp = str(asyncio.get_event_loop().time())
         
         logger.info(f"📝 Received message [ID: {request_id[:8]}...]: {request.message[:50]}...")
         
+        # --- Phase 1: Gather context from attachments ---
+        attachments_context = []
+        attachments_used = []
+        
+        if request.attachments:
+            logger.info(f"📎 Processing {len(request.attachments)} attachments...")
+            supabase_client = get_supabase_client()
+            
+            for upload_id in request.attachments:
+                try:
+                    # Get upload from database
+                    result = supabase_client.table('uploads')\
+                        .select('*')\
+                        .eq('id', upload_id)\
+                        .eq('user_id', user['id'])\
+                        .single()\
+                        .execute()
+                    
+                    if result.data:
+                        upload = result.data
+                        # Add extracted text to context
+                        attachments_context.append({
+                            'filename': upload['filename'],
+                            'text': upload['extracted_text'][:2000],  # Limit length
+                            'summary': upload.get('summary', '')
+                        })
+                        attachments_used.append(upload_id)
+                        logger.info(f"✅ Loaded attachment: {upload['filename']}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load attachment {upload_id}: {e}")
+        
+        # --- Phase 2: Web search if enabled ---
+        web_sources = []
+        web_context = ""
+        
+        if request.enable_web_search:
+            logger.info("🌐 Web search enabled, looking for URLs...")
+            # Extract URLs from message
+            import re
+            urls = re.findall(r'https?://[^\s]+', request.message)
+            
+            if urls:
+                for url in urls[:3]:  # Limit to 3 URLs
+                    try:
+                        content = await scraper_agent.scrape_url(url)
+                        web_sources.append({
+                            'url': url,
+                            'title': content.get('title', 'Unknown'),
+                            'text_length': len(content.get('text', ''))
+                        })
+                        web_context += f"\n\n--- Content from {url} ---\n{content.get('text', '')[:1500]}"
+                        logger.info(f"✅ Scraped: {url}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to scrape {url}: {e}")
+        
+        # --- Phase 3: Math computation if enabled ---
+        math_results = []
+        
+        if request.enable_math:
+            logger.info("🔢 Math computation enabled...")
+            # Look for equations or expressions
+            import re
+            
+            # Check for "solve" or "simplify" commands
+            if "solve" in request.message.lower():
+                # Extract equation pattern: "solve x^2 + 2x + 1 = 0"
+                match = re.search(r'solve\s+(.+?)(?:\s|$)', request.message, re.IGNORECASE)
+                if match:
+                    equation = match.group(1).strip()
+                    try:
+                        result = math_agent.solve_equation(equation)
+                        math_results.append({
+                            'operation': 'solve',
+                            'input': equation,
+                            'result': result
+                        })
+                        logger.info(f"✅ Solved equation: {equation}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to solve {equation}: {e}")
+            
+            if "simplify" in request.message.lower():
+                match = re.search(r'simplify\s+(.+?)(?:\s|$)', request.message, re.IGNORECASE)
+                if match:
+                    expression = match.group(1).strip()
+                    try:
+                        result = math_agent.simplify_expression(expression)
+                        math_results.append({
+                            'operation': 'simplify',
+                            'input': expression,
+                            'result': result
+                        })
+                        logger.info(f"✅ Simplified expression: {expression}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to simplify {expression}: {e}")
+        
+        # --- Phase 4: Build enhanced prompt ---
+        enhanced_message = request.message
+        
+        if attachments_context:
+            attachment_text = "\n\n--- Attached Files Context ---\n"
+            for att in attachments_context:
+                attachment_text += f"\n**{att['filename']}**:\n{att['text']}\n"
+            enhanced_message = attachment_text + "\n\n" + enhanced_message
+        
+        if web_context:
+            enhanced_message = enhanced_message + web_context
+        
+        if math_results:
+            math_text = "\n\n--- Math Results ---\n"
+            for result in math_results:
+                math_text += f"{result['operation'].capitalize()} '{result['input']}': {result['result']}\n"
+            enhanced_message = enhanced_message + math_text
+        
         # Convert frontend history to LangChain format
         langchain_history = convert_history_to_langchain(request.history)
         
-        # Process the query through the agent
-        messages = langchain_history + [HumanMessage(content=request.message)]
+        # Persist user message in chat_history (best-effort)
+        try:
+            if supabase is not None:
+                supabase.table("chat_history").insert({
+                    "user_id": user["user_id"],
+                    "conversation_id": None,
+                    "role": "user",
+                    "message": request.message,
+                }).execute()
+        except Exception:
+            logger.debug("chat_history insert (user) failed", exc_info=True)
+        
+        # --- Phase 5: Process through LLM agent ---
+        messages = langchain_history + [HumanMessage(content=enhanced_message)]
         
         # Run the agent and collect the final state
         final_state = await tutor_agent.graph.ainvoke({"messages": messages})
@@ -189,6 +395,60 @@ async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:
         # Extract thinking content from the messages
         thinking_content = extract_thinking_content(final_state.get("messages", []))
         
+        # --- Phase 6: Generate HTML response if requested ---
+        response_html = None
+        if request.response_format == "html":
+            # Determine content type based on message
+            content_type = "explanation"
+            if "example" in request.message.lower():
+                content_type = "example"
+            elif "exercise" in request.message.lower() or "practice" in request.message.lower():
+                content_type = "exercise"
+            
+            response_html = generate_teaching_html(
+                content=final_answer,
+                content_type=content_type,
+                title=request.topic_id or "Lesson"
+            )
+            response_html = sanitize_html(response_html)
+
+        # --- Phase 7: Update progress if topic is specified ---
+        if request.topic_id:
+            try:
+                supabase_client = get_supabase_client()
+                # Update progress
+                supabase_client.table('progress').update({
+                    'last_activity': timestamp
+                }).eq('user_id', user['id']).eq('topic_id', request.topic_id).execute()
+                logger.info(f"✅ Updated progress for topic {request.topic_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to update progress: {e}")
+
+        # Persist assistant reply to chat_history (best-effort)
+        try:
+            if supabase is not None:
+                supabase.table("chat_history").insert({
+                    "user_id": user["user_id"],
+                    "conversation_id": None,
+                    "role": "assistant",
+                    "message": final_answer,
+                }).execute()
+        except Exception:
+            logger.debug("chat_history insert (assistant) failed", exc_info=True)
+
+        # Create a small summary and store in user_memory (backend-only embeddings)
+        try:
+            summary = (thinking_content or "")[:400]  # simple placeholder summary
+            store_user_memory(
+                user_id=user["user_id"],
+                query=request.message,
+                response=final_answer,
+                summary=summary or final_answer[:400],
+                metadata={"request_id": request_id},
+            )
+        except Exception:
+            logger.debug("user_memory store failed", exc_info=True)
+        
         logger.info(f"✅ Successfully processed request [ID: {request_id[:8]}...]")
         
         return ChatResponse(
@@ -196,7 +456,11 @@ async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:
             thinking_content=thinking_content,
             type="complete",
             request_id=request_id,
-            timestamp=timestamp
+            timestamp=timestamp,
+            response_html=response_html,
+            attachments_used=attachments_used,
+            web_sources=web_sources,
+            math_results=math_results
         )
         
     except Exception as e:
@@ -208,7 +472,11 @@ async def chat_simple_endpoint(request: ChatRequest) -> ChatResponse:
             thinking_content="The system encountered an error while processing the request. This could be due to model availability or network issues.",
             type="error",
             request_id=request.request_id or str(uuid.uuid4()),
-            timestamp=str(asyncio.get_event_loop().time())
+            timestamp=str(asyncio.get_event_loop().time()),
+            response_html=None,
+            attachments_used=[],
+            web_sources=[],
+            math_results=[]
         )
 
 # --- Run Server ---

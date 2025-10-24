@@ -1,7 +1,28 @@
+"use client"
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
+import { createSupabaseBrowserClient } from '@/lib/supabase/client'
+import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
 
 export default function Home() {
+  const supabase = createSupabaseBrowserClient()
+  const router = useRouter()
+  const [authed, setAuthed] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const { data } = await supabase.auth.getSession()
+        if (mounted) setAuthed(!!data.session)
+      } catch (e) {
+        console.warn('session check failed', e)
+        if (mounted) setAuthed(false)
+      }
+    })()
+    return () => { mounted = false }
+  }, [supabase])
   return (
     <div className="space-y-16 lg:space-y-24">
       {/* Hero section */}
@@ -44,6 +65,11 @@ export default function Home() {
             <Button 
               size="lg" 
               className="font-medium text-base px-8 py-3 h-auto font-andika"
+              onClick={() => {
+                if (authed === null) return
+                if (authed) router.push('/dashboard/chat')
+                else router.push('/login')
+              }}
             >
               Start Learning
             </Button>

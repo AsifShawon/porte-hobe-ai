@@ -1,14 +1,14 @@
 "use client"
 
 import React, { useState, useRef, useEffect } from 'react'
+import { useAuth } from '@/components/auth-provider'
+import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Send, Bot, User, Loader2, Sparkles } from "lucide-react"
 import ReactMarkdown from 'react-markdown'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
@@ -25,6 +25,15 @@ interface Message {
 }
 
 export default function ChatPage() {
+  const { user, loading } = useAuth()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace('/login')
+    }
+  }, [user, loading, router])
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -145,7 +154,28 @@ export default function ChatPage() {
                   thinking_content: thinkingBuffer
                 }
                 setCurrentThinkingMessage(null)
-                setMessages(prev => [...prev, finalMsg])
+                setMessages(prev => [...prev, finalMsg]);
+                // Best-effort: persist memory on the backend after streaming completes.
+                // We call the frontend proxy `/api/memory/add` which forwards the
+                // authenticated request to the FastAPI backend. Failures are
+                // non-fatal and logged to console.
+                (async () => {
+                  try {
+                    const payload = {
+                      query: userMessage.content,
+                      response: answerBuffer,
+                      summary: (thinkingBuffer || answerBuffer || '').slice(0, 400),
+                      request_id: evt.request_id || undefined
+                    }
+                    await fetch('/api/memory/add', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload)
+                    })
+                  } catch (err) {
+                    console.warn('Failed to persist memory (non-fatal)', err)
+                  }
+                })()
                 break
               }
               case 'error': {
@@ -157,7 +187,7 @@ export default function ChatPage() {
                   timestamp: new Date(),
                   type: 'final_answer'
                 }
-                setMessages(prev => [...prev, errMsg])
+                setMessages(prev => [...prev, errMsg]);
                 break
               }
             }
@@ -205,25 +235,22 @@ export default function ChatPage() {
             Copy
           </button>
         </div>
-        <SyntaxHighlighter
-          style={vscDarkPlus}
-          language={language}
-          PreTag="div"
-          customStyle={{
-            margin: 0,
-            padding: '12px 16px',
-            background: '#1e1e1e',
-            fontSize: '13px',
-            lineHeight: '1.5',
-          }}
-          codeTagProps={{
-            style: {
+        <pre className="m-0 overflow-x-auto">
+          <code
+            className={`language-${language || 'text'}`}
+            style={{
+              display: 'block',
+              padding: '12px 16px',
+              background: '#1e1e1e',
+              color: '#d4d4d4',
+              fontSize: '13px',
+              lineHeight: '1.5',
               fontFamily: 'SF Mono, Monaco, Inconsolata, "Roboto Mono", Consolas, "Courier New", monospace',
-            }
-          }}
-        >
-          {String(children).replace(/\n$/, '')}
-        </SyntaxHighlighter>
+            }}
+          >
+            {String(children).replace(/\n$/, '')}
+          </code>
+        </pre>
       </div>
     )
   }

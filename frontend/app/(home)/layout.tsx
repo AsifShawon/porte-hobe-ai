@@ -15,7 +15,7 @@ export default function MarketingLayout({
       </main>
       
       {/* Footer */}
-      <footer className="border-t border-border bg-muted/50 py-6 mt-12">
+      <footer className="border-t border-border bg-muted/50 py-6 mb-0 mt-auto">
         <div className="container mx-auto px-4 text-center">
           <p 
             className="text-sm text-muted-foreground font-andika"

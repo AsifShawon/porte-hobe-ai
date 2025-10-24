@@ -18,11 +18,12 @@ def main():
     try:
         # Run uvicorn with the main app
         subprocess.run([
-            sys.executable, "-m", "uvicorn", 
-            "main:app", 
-            "--host", "0.0.0.0", 
-            "--port", "8000", 
-            "--reload"
+            sys.executable, "-m", "uvicorn",
+            "main:app",
+            "--host", "0.0.0.0",
+            "--port", "8000",
+            "--reload",
+            "--reload-exclude", ".venv"
         ], check=True)
     except KeyboardInterrupt:
         print("\n🛑 Server stopped by user")

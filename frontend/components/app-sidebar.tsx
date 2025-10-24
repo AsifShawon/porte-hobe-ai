@@ -80,9 +80,24 @@ const data = {
       ],
     },
     {
+      title: "Topics",
+      url: "/dashboard/topics",
+      icon: BookOpen,
+      items: [
+        {
+          title: "Browse Topics",
+          url: "/dashboard/topics",
+        },
+        {
+          title: "My Progress",
+          url: "/dashboard",
+        },
+      ],
+    },
+    {
       title: "Lessons",
       url: "/dashboard/lessons",
-      icon: BookOpen,
+      icon: Map,
       items: [
         {
           title: "All Lessons",

@@ -2,8 +2,18 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { BookOpen, TrendingUp, Calendar, CheckCircle } from "lucide-react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { getUser } from "@/lib/supabase/server";
+import { redirect } from "next/navigation";
+import ProgressCard, { ProgressSummary } from "@/components/ProgressCard";
 
-export default function DashboardPage() {
+export default async function DashboardPage() {
+  // Fetch the authenticated user
+  const user = await getUser()
+  
+  if (!user) {
+    redirect('/login')
+  }
+
   // Placeholder data for the logged-in user - will be replaced with Supabase data later
   const userStats = {
     myLessons: 12,
@@ -23,12 +33,21 @@ export default function DashboardPage() {
       <div>
         <div className="mb-2 flex items-center space-x-4">
           <SidebarTrigger className="-ml-1 lg:hidden" />
-          <h1 className="text-3xl font-bold">My Learning Dashboard</h1>
+          <div className="flex-1">
+            <h1 className="text-3xl font-bold">My Learning Dashboard</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Welcome back, {user.email}
+            </p>
+          </div>
+          <ProgressSummary />
         </div>
         <p className="text-muted-foreground">
           Track your progress in one-to-one tutoring
         </p>
       </div>
+
+      {/* AI Learning Progress */}
+      <ProgressCard className="w-full" />
 
       {/* Personal Stats Cards */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">

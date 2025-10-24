@@ -1,0 +1,23 @@
+{
+  "id": "GoLGw6kgw77tUk4",
+  "unique_key": "https://en.wikipedia.org/wiki/calculus",
+  "order_no": null,
+  "handled_at": "2025-09-12 21:53:58.928430+00:00",
+  "request": {
+    "url": "https://en.wikipedia.org/wiki/Calculus",
+    "method": "GET",
+    "headers": {},
+    "payload": null,
+    "user_data": {
+      "__crawlee": {
+        "state": 3
+      }
+    },
+    "retry_count": 0,
+    "no_retry": false,
+    "loaded_url": "https://en.wikipedia.org/wiki/Calculus",
+    "handled_at": "2025-09-12 21:53:58.928430+00:00",
+    "unique_key": "https://en.wikipedia.org/wiki/calculus",
+    "id": "GoLGw6kgw77tUk4"
+  }
+}

@@ -26,6 +26,7 @@ import urllib.parse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tools import create_search_tool
+from embedding_engine import search_user_memory, search_universal_memory
 
 # Initialize shared search tool once
 try:
@@ -37,12 +38,16 @@ else:
     SEARCH_INIT_ERROR = None
 
 
-def web_search(query: str) -> Dict[str, Any]:
+def web_search(query: str, max_results: int | None = None) -> Dict[str, Any]:
     if not query:
         raise ValueError("query required")
     if _SEARCH_TOOL is None:
         raise RuntimeError(f"Search tool unavailable: {SEARCH_INIT_ERROR}")
-    res = _SEARCH_TOOL.invoke({"query": query})
+    payload = {"query": query}
+    if max_results:
+        payload["max_results"] = max_results
+    res = _SEARCH_TOOL.invoke(payload)
+    print(f"web_search results: {res}")
     # TavilySearch may return list/dict; normalize
     if isinstance(res, (list, tuple)):
         return {"results": res}
@@ -115,13 +120,50 @@ def weather(location: str) -> Dict[str, Any]:
     }
 
 
+def memory_search(query: str, user_id: str | None = None, k: int = 5, scope: str = "both") -> Dict[str, Any]:
+    """Search vector memory in Supabase.
+
+    scope: 'user' (private), 'universal' (global), or 'both'.
+    """
+    if not query:
+        raise ValueError("query required")
+    out: Dict[str, Any] = {}
+    if scope in ("user", "both") and user_id:
+        try:
+            out["user_memory"] = search_user_memory(user_id=user_id, text=query, k=k)
+        except Exception as e:
+            out["user_memory_error"] = str(e)
+    if scope in ("universal", "both"):
+        try:
+            out["universal_memory"] = search_universal_memory(text=query, k=k)
+        except Exception as e:
+            out["universal_memory_error"] = str(e)
+    return out
+
+
 TOOL_DEFS = {
     "web_search": {
         "name": "web_search",
         "description": "Search the web for up-to-date information.",
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "What to search for"}},
+            "properties": {
+                "query": {"type": "string", "description": "What to search for"},
+                "max_results": {"type": "integer", "description": "Max results to retrieve"}
+            },
+            "required": ["query"],
+        },
+    },
+    # Alias for convenience
+    "search": {
+        "name": "search",
+        "description": "Alias of web_search",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer"}
+            },
             "required": ["query"],
         },
     },
@@ -140,6 +182,32 @@ TOOL_DEFS = {
             "type": "object",
             "properties": {"location": {"type": "string", "description": "City or place name"}},
             "required": ["location"],
+        },
+    },
+    "memory_search": {
+        "name": "memory_search",
+        "description": "Search private (user) and/or universal memory via pgvector.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "user_id": {"type": "string"},
+                "k": {"type": "integer"},
+                "scope": {"type": "string", "enum": ["user", "universal", "both"], "default": "both"}
+            },
+            "required": ["query"],
+        },
+    },
+    "utility": {
+        "name": "utility",
+        "description": "Small helper utilities: ping/echo/now.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "enum": ["ping", "echo", "now"]},
+                "args": {"type": "object"}
+            },
+            "required": ["name"],
         },
     },
 }
@@ -165,11 +233,31 @@ def handle_request(req: Dict[str, Any]) -> None:
             name = params.get("name")
             arguments = params.get("arguments") or {}
             if name == "web_search":
-                result = web_search(arguments.get("query", ""))
+                result = web_search(arguments.get("query", ""), arguments.get("max_results"))
+            elif name == "search":
+                result = web_search(arguments.get("query", ""), arguments.get("max_results"))
             elif name == "time":
                 result = current_time(arguments.get("timezone"))
             elif name == "weather":
                 result = weather(arguments.get("location", ""))
+            elif name == "memory_search":
+                result = memory_search(
+                    query=arguments.get("query", ""),
+                    user_id=arguments.get("user_id"),
+                    k=arguments.get("k", 5),
+                    scope=arguments.get("scope", "both"),
+                )
+            elif name == "utility":
+                util_name = arguments.get("name")
+                args = arguments.get("args") or {}
+                if util_name == "ping":
+                    result = {"ok": True}
+                elif util_name == "echo":
+                    result = {"echo": args}
+                elif util_name == "now":
+                    result = current_time(args.get("timezone"))
+                else:
+                    raise ValueError(f"Unknown utility: {util_name}")
             else:
                 raise ValueError(f"Unknown tool: {name}")
         else:

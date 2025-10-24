@@ -13,8 +13,18 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import { getSession } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const session = await getSession()
+  
+  // This is a server-side check. Middleware will also handle this,
+  // but this provides an extra layer of protection
+  if (!session) {
+    redirect('/login')
+  }
+
   return (
     <div className="h-screen bg-background overflow-hidden">
       <SidebarProvider>

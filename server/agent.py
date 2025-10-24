@@ -126,7 +126,7 @@ class TutorAgent:
     def _tools_node(self, state: AgentState) -> Dict[str, Any]:
         logger.info("🔍 Running tools (MCP + search)...")
         plan = self._extract_plan(state)
-        # Always attempt legacy search if needed
+        # Prefer MCP tools for external tasks
         need_search = self._parse_need_search(plan)
         query = self._parse_search_query(plan) or next(
             (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
@@ -141,15 +141,21 @@ class TutorAgent:
         weather_location = weather_loc_match.group(1).strip() if weather_loc_match else None
 
         blocks: List[str] = []
-        # SEARCH
+        # SEARCH via MCP (alias 'search')
         if need_search:
             try:
-                results = self.tools[0].invoke({"query": query})
+                results = self._call_mcp_tool("search", {"query": query, "max_results": 5})
                 results_text = results if isinstance(results, str) else json.dumps(results, ensure_ascii=False)[:4000]
             except Exception as e:
                 logger.exception("❌ Search tool failed")
                 results_text = f"[Search Error] {e}"
             blocks.append(f"<SEARCH_RESULTS>\nQuery: {query}\n{results_text}\n</SEARCH_RESULTS>")
+        # MEMORY via MCP (both scopes)
+        try:
+            mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
+            blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
+        except Exception as e:
+            blocks.append(f"<MEMORY_RESULTS_ERROR>{e}</MEMORY_RESULTS_ERROR>")
         # TIME via MCP
         if need_time:
             try:
@@ -264,12 +270,16 @@ class TutorAgent:
             search_query_match = re.search(r"SEARCH_QUERY:\s*(.*)", think_accum, re.IGNORECASE)
             search_query = (search_query_match.group(1).strip() if search_query_match else query) or query
             try:
-                tool_res = self.tools[0].invoke({"query": search_query})
+                tool_res = self._call_mcp_tool("search", {"query": search_query, "max_results": 5})
                 if not isinstance(tool_res, str):
                     tool_res = json.dumps(tool_res, ensure_ascii=False)[:4000]
             except Exception as e:
                 tool_res = f"[Search Error] {e}"
             search_block = f"\n\n<SEARCH_RESULTS>\nQuery: {search_query}\n{tool_res}\n</SEARCH_RESULTS>"
+        # memory block
+        with suppress(Exception):
+            mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
+            extra_blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
         if need_time:
             timezone_match = re.search(r"TIMEZONE:\s*([^\n]+)", think_accum, re.IGNORECASE)
             timezone = timezone_match.group(1).strip() if timezone_match else None
