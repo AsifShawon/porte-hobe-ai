@@ -28,7 +28,7 @@ import sympy
 from sympy import sympify, solve, simplify, latex
 
 # Embeddings
-from sentence_transformers import SentenceTransformer
+from langchain_ollama import OllamaEmbeddings
 import numpy as np
 
 # Supabase
@@ -279,15 +279,17 @@ class VectorAgent:
     """Agent for embeddings and semantic search"""
     
     def __init__(self):
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Use Ollama's embeddinggemma model for embeddings
+        self.embeddings = OllamaEmbeddings(model="embeddinggemma")
         self.supabase = get_supabase_client()
-        logger.info("✅ VectorAgent initialized")
+        logger.info("✅ VectorAgent initialized with Ollama embeddinggemma")
     
     def create_embedding(self, text: str) -> List[float]:
-        """Create embedding vector for text"""
+        """Create embedding vector for text using Ollama"""
         try:
-            embedding = self.model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
+            # OllamaEmbeddings returns embeddings directly
+            embedding = self.embeddings.embed_query(text)
+            return embedding
         except Exception as e:
             logger.error(f"❌ Embedding creation failed: {e}")
             return []
