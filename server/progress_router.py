@@ -66,7 +66,7 @@ async def get_all_progress(
         # Query progress with topic details
         query = supabase.table('progress')\
             .select('*, topics(id, title, category, difficulty_level)')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .order('last_activity', desc=True)
         
         if status:
@@ -116,7 +116,7 @@ async def get_topic_progress(
     try:
         result = supabase.table('progress')\
             .select('*, topics(id, title, category, difficulty_level)')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', topic_id)\
             .single()\
             .execute()
@@ -129,7 +129,7 @@ async def get_topic_progress(
                 raise HTTPException(status_code=404, detail="Topic not found")
             
             new_progress = {
-                'user_id': user['id'],
+                'user_id': user['user_id'],
                 'topic_id': topic_id,
                 'score': 0.0,
                 'completed_lessons': 0,
@@ -140,7 +140,7 @@ async def get_topic_progress(
             result = supabase.table('progress').insert(new_progress).execute()
             result = supabase.table('progress')\
                 .select('*, topics(id, title, category, difficulty_level)')\
-                .eq('user_id', user['id'])\
+                .eq('user_id', user['user_id'])\
                 .eq('topic_id', topic_id)\
                 .single()\
                 .execute()
@@ -191,7 +191,7 @@ async def update_progress(
         # Get current progress
         current = supabase.table('progress')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', update.topic_id)\
             .execute()
         
@@ -201,7 +201,7 @@ async def update_progress(
             status = 'in_progress' if new_score > 0 else 'not_started'
             
             new_progress = {
-                'user_id': user['id'],
+                'user_id': user['user_id'],
                 'topic_id': update.topic_id,
                 'score': new_score,
                 'completed_lessons': update.completed_lessons,
@@ -265,7 +265,7 @@ async def get_overall_stats(
         # Get all progress
         progress = supabase.table('progress')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .execute()
         
         total_topics = len(progress.data)
@@ -283,7 +283,7 @@ async def get_overall_stats(
             thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
             sessions = supabase.table('chat_sessions')\
                 .select('created_at')\
-                .eq('user_id', user['id'])\
+                .eq('user_id', user['user_id'])\
                 .gte('created_at', thirty_days_ago)\
                 .execute()
             
@@ -298,7 +298,7 @@ async def get_overall_stats(
         # Calculate total time (estimate: 5 min per chat session)
         total_sessions = supabase.table('chat_sessions')\
             .select('id', count='exact')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .execute()
         
         total_time_spent = (total_sessions.count if hasattr(total_sessions, 'count') else len(total_sessions.data)) * 5
@@ -370,7 +370,7 @@ async def reset_topic_progress(
                 'status': 'not_started',
                 'metadata': {}
             })\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', topic_id)\
             .execute()
         

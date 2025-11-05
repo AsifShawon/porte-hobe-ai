@@ -479,6 +479,133 @@ async def chat_simple_endpoint(request: ChatRequest, user=Depends(get_current_us
             math_results=[]
         )
 
+@app.get("/api/chat/history")
+async def get_chat_history(
+    user=Depends(get_current_user),
+    limit: int = 50,
+    conversation_id: Optional[str] = None
+):
+    """Get chat history for the authenticated user"""
+    try:
+        if not supabase:
+            return {"messages": []}
+        
+        query = supabase.table("chat_history")\
+            .select("*")\
+            .eq("user_id", user["user_id"])\
+            .order("created_at", desc=True)\
+            .limit(limit)
+        
+        if conversation_id:
+            query = query.eq("conversation_id", conversation_id)
+        
+        result = query.execute()
+        
+        # Reverse to get chronological order
+        messages = list(reversed(result.data)) if result.data else []
+        
+        return {"messages": messages}
+        
+    except Exception as e:
+        logger.exception("Failed to fetch chat history")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SaveMessageRequest(BaseModel):
+    role: str
+    message: str
+    conversation_id: Optional[str] = None
+
+@app.post("/api/chat/save-message")
+async def save_message(
+    request: SaveMessageRequest,
+    user=Depends(get_current_user)
+):
+    """Save a chat message to history"""
+    try:
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database not configured")
+        
+        # Insert message into chat_history
+        result = supabase.table("chat_history").insert({
+            "user_id": user["user_id"],
+            "conversation_id": request.conversation_id,
+            "role": request.role,
+            "message": request.message,
+        }).execute()
+        
+        logger.info(f"✅ Saved {request.role} message to chat history")
+        
+        return {"message": "Message saved successfully"}
+        
+    except Exception as e:
+        logger.exception("Failed to save message")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/chat/history/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    user=Depends(get_current_user)
+):
+    """Delete all messages in a conversation"""
+    try:
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database not configured")
+        
+        # Delete all messages with this conversation_id for this user
+        result = supabase.table("chat_history")\
+            .delete()\
+            .eq("user_id", user["user_id"])\
+            .eq("conversation_id", conversation_id)\
+            .execute()
+        
+        logger.info(f"✅ Deleted conversation {conversation_id}")
+        
+        return {"message": "Conversation deleted successfully", "conversation_id": conversation_id}
+        
+    except Exception as e:
+        logger.exception("Failed to delete conversation")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class DeleteMessagesRequest(BaseModel):
+    messageIds: List[Any]  # Accept any type of ID (string, int, UUID)
+
+@app.post("/api/chat/history/delete-messages")
+async def delete_messages(
+    request: DeleteMessagesRequest,
+    user=Depends(get_current_user)
+):
+    """Delete specific messages by their IDs"""
+    try:
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database not configured")
+        
+        if not request.messageIds:
+            return {"message": "No messages to delete", "deleted_count": 0}
+        
+        logger.info(f"🗑️ Attempting to delete {len(request.messageIds)} messages")
+        
+        # Delete messages by IDs for this user only
+        deleted_count = 0
+        for message_id in request.messageIds:
+            try:
+                result = supabase.table("chat_history")\
+                    .delete()\
+                    .eq("id", str(message_id))\
+                    .eq("user_id", user["user_id"])\
+                    .execute()
+                deleted_count += 1
+                logger.debug(f"Deleted message {message_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete message {message_id}: {e}")
+        
+        logger.info(f"✅ Deleted {deleted_count} messages")
+        
+        return {"message": f"Successfully deleted {deleted_count} messages", "deleted_count": deleted_count}
+        
+    except Exception as e:
+        logger.exception("Failed to delete messages")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Run Server ---
 if __name__ == "__main__":
     import uvicorn
@@ -489,3 +616,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+

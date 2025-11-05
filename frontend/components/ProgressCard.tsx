@@ -37,18 +37,12 @@ export default function ProgressCard({ className }: ProgressCardProps) {
   const fetchStats = async () => {
     try {
       setLoading(true);
-      const { createSupabaseBrowserClient } = await import('@/lib/supabaseClient');
-      const supabase = createSupabaseBrowserClient();
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session?.access_token) {
-        throw new Error('Not authenticated');
-      }
-
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/api/progress/stats`, {
+      
+      // Use Next.js API route instead of direct backend call
+      const response = await fetch('/api/progress/stats', {
+        method: 'GET',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
         },
       });
 

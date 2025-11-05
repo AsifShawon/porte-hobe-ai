@@ -73,7 +73,14 @@ def verify_supabase_jwt(token: str) -> Tuple[bool, Optional[str], Optional[str]]
 
 	try:
 		if SUPABASE_JWT_SECRET:
-			payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"])
+			# Decode with verification, but don't verify audience (aud claim)
+			# because frontend tokens have different audience than service_role
+			payload = jwt.decode(
+				token, 
+				SUPABASE_JWT_SECRET, 
+				algorithms=["HS256"],
+				options={"verify_aud": False}  # Skip audience verification
+			)
 			user_id = payload.get("sub") or payload.get("user_id") or payload.get("uid")
 			if not user_id:
 				return False, None, "Token missing subject"

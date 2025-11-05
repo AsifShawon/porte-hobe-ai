@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Send, Bot, User, Loader2, Sparkles } from "lucide-react"
+import { Send, Bot, User, Loader2, Sparkles, History } from "lucide-react"
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -47,7 +47,36 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [currentThinkingMessage, setCurrentThinkingMessage] = useState<Message | null>(null)
   const [openThinking, setOpenThinking] = useState<{[key: string]: boolean}>({})
+  const [conversationId, setConversationId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Check for continued conversation from history
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const continueData = sessionStorage.getItem('continueChat')
+      if (continueData) {
+        try {
+          const { conversationId: convId, messages: historyMessages } = JSON.parse(continueData)
+          setConversationId(convId)
+          
+          const loadedMessages: Message[] = historyMessages.map((msg: any) => ({
+            id: msg.id || Date.now().toString(),
+            content: msg.message || msg.content,
+            role: msg.role as 'user' | 'assistant',
+            timestamp: new Date(msg.created_at),
+            type: msg.role === 'assistant' ? 'final_answer' : undefined
+          }))
+          
+          setMessages([messages[0], ...loadedMessages]) // Keep welcome message
+          
+          // Clear the session storage
+          sessionStorage.removeItem('continueChat')
+        } catch (error) {
+          console.error('Failed to load continued conversation:', error)
+        }
+      }
+    }
+  }, [])
 
   const toggleThinking = (messageId: string) => {
     setOpenThinking(prev => ({
@@ -58,11 +87,16 @@ export default function ChatPage() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' })
+    }
   }
 
   useEffect(() => {
-    scrollToBottom()
+    // Use requestAnimationFrame for smoother scrolling
+    requestAnimationFrame(() => {
+      scrollToBottom()
+    })
   }, [messages, currentThinkingMessage])
 
   const sendMessage = async () => {
@@ -155,12 +189,21 @@ export default function ChatPage() {
                 }
                 setCurrentThinkingMessage(null)
                 setMessages(prev => [...prev, finalMsg]);
-                // Best-effort: persist memory on the backend after streaming completes.
-                // We call the frontend proxy `/api/memory/add` which forwards the
-                // authenticated request to the FastAPI backend. Failures are
-                // non-fatal and logged to console.
+                
+                // Save both to chat_history and memory
                 (async () => {
                   try {
+                    // Save assistant message to chat_history
+                    await fetch('/api/chat/save-message', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        role: 'assistant',
+                        message: answerBuffer
+                      })
+                    })
+                    
+                    // Persist memory
                     const payload = {
                       query: userMessage.content,
                       response: answerBuffer,
@@ -173,7 +216,7 @@ export default function ChatPage() {
                       body: JSON.stringify(payload)
                     })
                   } catch (err) {
-                    console.warn('Failed to persist memory (non-fatal)', err)
+                    console.warn('Failed to persist messages', err)
                   }
                 })()
                 break
@@ -217,7 +260,7 @@ export default function ChatPage() {
     children: React.ReactNode;
   }) => {
     return (
-      <div className="relative my-2 sm:my-4 rounded-lg overflow-hidden border border-border bg-[#1e1e1e]">
+      <div className="relative my-2 sm:my-4 rounded-lg overflow-hidden border border-border bg-[#1e1e1e] max-w-full">
         {/* VS Code-like header */}
         <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-[#2d2d30] border-b border-[#3e3e42] text-xs">
           <div className="flex items-center gap-2">
@@ -235,22 +278,27 @@ export default function ChatPage() {
             Copy
           </button>
         </div>
-        <pre className="m-0 overflow-x-auto">
-          <code
-            className={`language-${language || 'text'}`}
-            style={{
-              display: 'block',
-              padding: '12px 16px',
-              background: '#1e1e1e',
-              color: '#d4d4d4',
-              fontSize: '13px',
-              lineHeight: '1.5',
-              fontFamily: 'SF Mono, Monaco, Inconsolata, "Roboto Mono", Consolas, "Courier New", monospace',
-            }}
-          >
-            {String(children).replace(/\n$/, '')}
-          </code>
-        </pre>
+        <div className="overflow-x-auto">
+          <pre className="m-0">
+            <code
+              className={`language-${language || 'text'}`}
+              style={{
+                display: 'block',
+                padding: '12px 16px',
+                background: '#1e1e1e',
+                color: '#d4d4d4',
+                fontSize: '13px',
+                lineHeight: '1.5',
+                fontFamily: 'SF Mono, Monaco, Inconsolata, "Roboto Mono", Consolas, "Courier New", monospace',
+                whiteSpace: 'pre',
+                wordBreak: 'normal',
+                overflowWrap: 'normal',
+              }}
+            >
+              {String(children).replace(/\n$/, '')}
+            </code>
+          </pre>
+        </div>
       </div>
     )
   }
@@ -258,7 +306,7 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4 border-b bg-background flex-shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4 border-b bg-background shrink-0">
         <div className="flex items-center gap-2">
           <Avatar className="h-7 w-7 sm:h-8 sm:w-8">
             <AvatarFallback className="bg-primary text-primary-foreground">
@@ -270,15 +318,28 @@ export default function ChatPage() {
             <p className="text-xs text-muted-foreground">Programming & Math Assistant</p>
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-          <Sparkles className="h-3 w-3" />
-          <span className="hidden sm:inline">Autonomous Learning</span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => router.push('/dashboard/chat/history')}
+            className="gap-2"
+          >
+            <History className="h-4 w-4" />
+            <span className="hidden sm:inline">History</span>
+          </Button>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Sparkles className="h-3 w-3" />
+            <span className="hidden sm:inline">Autonomous Learning</span>
+          </div>
         </div>
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4">
-        {messages.map((message) => (
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 pb-2">
+        <div className="space-y-4 min-h-full flex flex-col">
+          <div className="flex-1" />
+          {messages.map((message) => (
           <div
             key={message.id}
             className={`flex gap-2 sm:gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -292,14 +353,14 @@ export default function ChatPage() {
             )}
             
             <div
-              className={`max-w-[85%] sm:max-w-[75%] lg:max-w-[65%] rounded-lg p-2 sm:p-3 ${
+              className={`rounded-lg p-2 sm:p-3 ${
                 message.role === 'user'
-                  ? 'bg-primary text-primary-foreground ml-auto'
-                  : 'bg-muted'
+                  ? 'bg-primary text-primary-foreground ml-auto max-w-[85%] sm:max-w-[75%]'
+                  : 'bg-muted max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]'
               }`}
             >
               {message.role === 'assistant' ? (
-                <div className="text-sm leading-relaxed">
+                <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none break-words">
                   {message.thinking_content && (
                     <Collapsible open={openThinking[message.id] || false} onOpenChange={() => toggleThinking(message.id)}>
                       <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground mb-2 w-full text-left">
@@ -313,7 +374,7 @@ export default function ChatPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                         </svg>
                       </CollapsibleTrigger>
-                      <CollapsibleContent className="border-l-2 border-blue-200 dark:border-blue-700 pl-3 mb-3 bg-blue-50/30 dark:bg-blue-950/20 rounded-r-md py-2">
+                      <CollapsibleContent className="border-l-2 border-blue-200 dark:border-blue-700 pl-3 mb-3 bg-blue-50/30 dark:bg-blue-950/20 rounded-r-md py-2 overflow-x-auto">
                         <div className="text-blue-600 dark:text-blue-400 font-medium mb-2 text-xs">🧠 AI Reasoning Process:</div>
                         <ReactMarkdown
                           remarkPlugins={[remarkMath, remarkGfm]}
@@ -412,13 +473,13 @@ export default function ChatPage() {
                 <Bot className="h-3 w-3 sm:h-4 sm:w-4" />
               </AvatarFallback>
             </Avatar>
-            <div className="max-w-[85%] sm:max-w-[75%] lg:max-w-[65%] rounded-lg p-2 sm:p-3 bg-muted">
+            <div className="rounded-lg p-2 sm:p-3 bg-muted max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]">
               <div className="flex items-center gap-2 mb-2">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span className="text-sm text-muted-foreground">AI is thinking & composing...</span>
               </div>
               {currentThinkingMessage.thinking_content && (
-                <div className="text-xs border-l-2 border-blue-200 dark:border-blue-700 pl-3 mt-2 bg-blue-50/50 dark:bg-blue-950/30 rounded-r-md py-2 mb-2">
+                <div className="text-xs border-l-2 border-blue-200 dark:border-blue-700 pl-3 mt-2 bg-blue-50/50 dark:bg-blue-950/30 rounded-r-md py-2 mb-2 overflow-x-auto">
                   <div className="text-blue-600 dark:text-blue-400 font-medium mb-1">🧠 Reasoning:</div>
                   <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                     {currentThinkingMessage.thinking_content}
@@ -426,7 +487,7 @@ export default function ChatPage() {
                 </div>
               )}
               {currentThinkingMessage.content && (
-                <div className="prose dark:prose-invert max-w-none text-sm">
+                <div className="prose prose-sm dark:prose-invert max-w-none text-sm">
                   <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                     {currentThinkingMessage.content}
                   </ReactMarkdown>
@@ -435,11 +496,12 @@ export default function ChatPage() {
             </div>
           </div>
         )}
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} className="h-0" />
+        </div>
       </div>
 
       {/* Input */}
-      <div className="p-3 sm:p-4 border-t bg-background flex-shrink-0">
+      <div className="p-3 sm:p-4 border-t bg-background shrink-0">
         <div className="flex gap-2">
           <Input
             ref={inputRef}
