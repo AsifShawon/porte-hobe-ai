@@ -182,8 +182,8 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
                     }).execute()
             except Exception:
                 logger.debug("chat_history insert (user) failed", exc_info=True)
-            # Stream phases
-            async for evt in tutor_agent.stream_phases(request.message, langchain_history):
+            # Stream phases (with user_id for intent classification)
+            async for evt in tutor_agent.stream_phases(request.message, langchain_history, user_id=user.get("user_id")):
                 base = {
                     "request_id": request_id,
                     "timestamp": str(asyncio.get_event_loop().time())
