@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator
+from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
