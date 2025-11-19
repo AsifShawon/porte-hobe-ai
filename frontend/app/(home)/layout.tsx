@@ -6,16 +6,16 @@ export default function MarketingLayout({
   children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
       <Navbar />
-      <main className="container mx-auto px-4 py-6">
+      <main className="container mx-auto px-4 py-6 grow">
         <div className="mx-auto max-w-4xl">
           {children}
         </div>
       </main>
       
       {/* Footer */}
-      <footer className="border-t border-border bg-muted/50 py-6 mb-0 mt-auto">
+      <footer className="border-t border-border bg-muted/50 py-6">
         <div className="container mx-auto px-4 text-center">
           <p 
             className="text-sm text-muted-foreground font-andika"
