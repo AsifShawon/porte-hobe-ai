@@ -15,7 +15,8 @@ from agent import TutorAgent
 from auth import get_current_user
 from rate_limit import limit_user
 from config import supabase, get_supabase_client
-from embedding_engine import search_user_memory, search_universal_memory, store_user_memory
+# Updated to use Memori engine instead of embedding_engine
+from memori_engine import initialize_memori_engine, get_memori_engine
 from mcp_agents import scraper_agent, file_agent, math_agent, vector_agent
 from html_utils import sanitize_html, generate_teaching_html
 
@@ -36,17 +37,25 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - initialize agent on startup"""
     global tutor_agent
     logger.info("🚀 Starting FastAPI server...")
-    
+
+    # Initialize Memori memory engine first
+    try:
+        initialize_memori_engine(verbose=False)
+        logger.info("✅ Memori engine initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to initialize Memori: {e}")
+        logger.info("Continuing without Memori (will use fallback)")
+
     # Initialize the TutorAgent
     try:
-        tutor_agent = TutorAgent()
+        tutor_agent = TutorAgent(enable_memori=True)
         logger.info("✅ TutorAgent initialized successfully")
     except Exception as e:
         logger.error(f"❌ Failed to initialize TutorAgent: {e}")
         tutor_agent = None
-    
+
     yield
-    
+
     logger.info("🛑 Shutting down FastAPI server...")
 
 # --- FastAPI App ---
@@ -215,20 +224,36 @@ class MemoryAddRequest(BaseModel):
 
 @app.post("/api/memory/add")
 async def memory_add(req: MemoryAddRequest, user=Depends(get_current_user)):
-    """Store a memory record for the authenticated user.
+    """Store a memory record for the authenticated user using Memori.
 
     Intended to be called by the frontend after a streaming chat completes.
+    Memori will automatically extract entities, facts, and relationships.
     """
     try:
         limit_user(user["user_id"])  # apply rate limit as well
-        item = store_user_memory(
-            user_id=user["user_id"],
-            query=req.query,
-            response=req.response,
-            summary=(req.summary or req.response[:400]),
-            metadata={"request_id": req.request_id} if req.request_id else None,
-        )
-        return {"ok": True, "item": item}
+
+        # Use TutorAgent's Memori integration if available
+        if tutor_agent and tutor_agent.memori_engine:
+            result = tutor_agent.store_conversation_memory(
+                user_id=user["user_id"],
+                user_message=req.query,
+                assistant_response=req.response,
+                metadata={"request_id": req.request_id} if req.request_id else None
+            )
+            return {"ok": True, "item": result, "engine": "memori"}
+        else:
+            # Fallback: basic storage without Memori
+            logger.warning("Memori not available, storing basic memory")
+            return {
+                "ok": True,
+                "item": {
+                    "user_id": user["user_id"],
+                    "query": req.query,
+                    "response": req.response[:400]
+                },
+                "engine": "fallback"
+            }
+
     except HTTPException as e:
         raise e
     except Exception as e:

@@ -13,6 +13,8 @@ from prompts import THINK_PROMPT, ANSWER_PROMPT, get_think_prompt, get_answer_pr
 import subprocess, sys, json, threading, queue, uuid, time as _time
 from pathlib import Path
 from contextlib import suppress
+# MEMORI INTEGRATION
+from memori_engine import MemoriEngine
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -30,7 +32,7 @@ class AgentState(TypedDict):
 class TutorAgent:
     """Two-phase reasoning tutor with tool-calling and streaming answers."""
 
-    def __init__(self, model_name: str = "qwen2.5:3b-instruct-q5_K_M") -> None:
+    def __init__(self, model_name: str = "qwen2.5:3b-instruct-q5_K_M", enable_memori: bool = True) -> None:
         logger.info(f"🚀 Initializing TutorAgent with model: {model_name}")
 
         self.llm = ChatOllama(model=model_name, temperature=0.1, stream=True)  # enable streaming
@@ -38,10 +40,23 @@ class TutorAgent:
         # Initialize MCP client (for web_search, time, weather)
         self.mcp_client = MCPClient(start=True)
 
+        # Initialize Memori for long-term memory management
+        self.memori_engine = None
+        if enable_memori:
+            try:
+                self.memori_engine = MemoriEngine(
+                    ollama_model=model_name,
+                    verbose=False  # Set to True for debugging
+                )
+                logger.info("✅ Memori long-term memory enabled")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize Memori: {e}")
+                logger.info("Continuing without Memori integration")
+
         # Load prompts from prompts.py
         self.think_prompt = THINK_PROMPT
         self.answer_prompt = ANSWER_PROMPT
-        
+
         # Optional: Allow dynamic prompt selection
         self.subject_focus = None  # Can be set to "math", "coding", etc.
         self.complexity_level = "standard"  # Can be "simple" or "standard"
@@ -331,6 +346,80 @@ class TutorAgent:
         if not self.mcp_client or not self.mcp_client.alive:
             raise RuntimeError("MCP client not running")
         return self.mcp_client.call_tool(name, arguments)
+
+    # MEMORI INTEGRATION METHODS
+    def store_conversation_memory(
+        self,
+        user_id: str,
+        user_message: str,
+        assistant_response: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Store a conversation in Memori for long-term memory extraction.
+
+        Memori will automatically:
+        - Extract facts, preferences, and skills from the conversation
+        - Build entity relationships
+        - Make memories available for future context injection
+
+        Args:
+            user_id: User identifier
+            user_message: User's message
+            assistant_response: AI tutor's response
+            metadata: Optional metadata (topic_id, timestamp, etc.)
+
+        Returns:
+            Storage confirmation
+        """
+        if not self.memori_engine:
+            logger.debug("Memori not enabled, skipping memory storage")
+            return {"status": "skipped", "reason": "memori_disabled"}
+
+        try:
+            result = self.memori_engine.store_conversation(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                metadata=metadata
+            )
+            logger.debug(f"✅ Stored conversation in Memori for user {user_id}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to store in Memori: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def add_user_learning_preference(
+        self,
+        user_id: str,
+        preference: str,
+        category: str = "learning_preference"
+    ) -> Dict[str, Any]:
+        """
+        Explicitly store a user's learning preference in Memori.
+
+        Args:
+            user_id: User identifier
+            preference: Preference description
+            category: Category of preference
+
+        Returns:
+            Storage confirmation
+        """
+        if not self.memori_engine:
+            return {"status": "skipped", "reason": "memori_disabled"}
+
+        try:
+            result = self.memori_engine.add_user_preference(
+                user_id=user_id,
+                preference=preference,
+                category=category
+            )
+            logger.info(f"✅ Added learning preference for user {user_id}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to add preference: {e}")
+            return {"status": "error", "error": str(e)}
 
 
 # MCP CLIENT IMPLEMENTATION
