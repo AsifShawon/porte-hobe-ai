@@ -24,6 +24,21 @@ interface Message {
   request_id?: string
 }
 
+// Client-side only timestamp component to avoid hydration mismatch
+function TimeDisplay({ timestamp }: { timestamp: Date }) {
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  if (!mounted) {
+    return null
+  }
+
+  return <>{timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+}
+
 export default function ChatPage() {
   const { user, loading } = useAuth()
   const router = useRouter()
@@ -56,16 +71,30 @@ export default function ChatPage() {
       const continueData = sessionStorage.getItem('continueChat')
       if (continueData) {
         try {
-          const { conversationId: convId, messages: historyMessages } = JSON.parse(continueData)
-          setConversationId(convId)
+          const parsed = JSON.parse(continueData) as { conversationId?: string; messages?: unknown }
+          const { conversationId: convId, messages: historyMessages } = parsed
+          setConversationId(convId ?? null)
           
-          const loadedMessages: Message[] = historyMessages.map((msg: any) => ({
-            id: msg.id || Date.now().toString(),
-            content: msg.message || msg.content,
-            role: msg.role as 'user' | 'assistant',
-            timestamp: new Date(msg.created_at),
-            type: msg.role === 'assistant' ? 'final_answer' : undefined
-          }))
+          type HistoryItem = {
+            id?: string
+            message?: string
+            content?: string
+            role?: 'user' | 'assistant' | string
+            created_at?: string | number
+          }
+          
+          const loadedMessages: Message[] = Array.isArray(historyMessages)
+            ? (historyMessages as HistoryItem[]).map((msg) => {
+                const role = msg.role === 'assistant' ? 'assistant' : 'user'
+                return {
+                  id: msg.id || Date.now().toString(),
+                  content: msg.message || msg.content || '',
+                  role,
+                  timestamp: new Date(msg.created_at || Date.now()),
+                  type: role === 'assistant' ? 'final_answer' : undefined
+                }
+              })
+            : []
           
           setMessages([messages[0], ...loadedMessages]) // Keep welcome message
           
@@ -450,7 +479,7 @@ export default function ChatPage() {
               )}
               <div className="flex justify-between items-center mt-2">
                 <span className="text-xs opacity-70">
-                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <TimeDisplay timestamp={message.timestamp} />
                 </span>
               </div>
             </div>
