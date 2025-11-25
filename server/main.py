@@ -20,10 +20,14 @@ from memori_engine import initialize_memori_engine, get_memori_engine
 from mcp_agents import scraper_agent, file_agent, math_agent, vector_agent
 from html_utils import sanitize_html, generate_teaching_html
 
-# Import new routers
+# Import routers
 from file_router import router as file_router
 from progress_router import router as progress_router
 from topic_router import router as topic_router
+from goal_router import router as goal_router
+from achievement_router import router as achievement_router
+from practice_router import router as practice_router
+from resource_router import router as resource_router
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -79,6 +83,10 @@ app.add_middleware(
 app.include_router(file_router)
 app.include_router(progress_router)
 app.include_router(topic_router)
+app.include_router(goal_router)
+app.include_router(achievement_router)
+app.include_router(practice_router)
+app.include_router(resource_router)
 
 # --- Request/Response Models ---
 class MessageItem(BaseModel):
