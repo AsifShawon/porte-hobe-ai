@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS goals (
     unit VARCHAR(50) DEFAULT 'items', -- topics, minutes, days, points
     status VARCHAR(50) DEFAULT 'active', -- active, completed, failed, paused
     deadline TIMESTAMPTZ,
-    topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+    topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS practice_exercises (
     description TEXT NOT NULL,
     exercise_type VARCHAR(50) NOT NULL, -- coding, quiz, math, concept, debugging
     difficulty VARCHAR(50) NOT NULL, -- beginner, intermediate, advanced, expert
-    topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+    topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     points INTEGER DEFAULT 10,
     time_limit INTEGER, -- in minutes
     content JSONB NOT NULL, -- exercise-specific content (code template, questions, etc.)
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS resources (
     title VARCHAR(200) NOT NULL,
     content TEXT,
     url TEXT,
-    topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+    topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     category VARCHAR(50) DEFAULT 'general', -- programming, math, general, tutorial, documentation, example
     tags TEXT[] DEFAULT '{}',
     is_favorite BOOLEAN DEFAULT FALSE,
@@ -279,7 +279,7 @@ ALTER TABLE resources
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+    topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     message_count INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     ended_at TIMESTAMPTZ
