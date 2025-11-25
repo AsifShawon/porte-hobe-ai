@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator
+from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
@@ -13,6 +13,11 @@ from prompts import THINK_PROMPT, ANSWER_PROMPT, get_think_prompt, get_answer_pr
 import subprocess, sys, json, threading, queue, uuid, time as _time
 from pathlib import Path
 from contextlib import suppress
+# MEMORI INTEGRATION
+from memori_engine import MemoriEngine
+# PHASE 3: INTENT CLASSIFICATION & DYNAMIC PROMPTS
+from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel
+from dynamic_prompts import DynamicPromptManager
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -24,13 +29,14 @@ class AgentState(TypedDict):
     """The state that flows through the graph."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
     final_answer: str
+    intent_result: Optional[IntentResult]  # PHASE 3: Store detected intent
 
 
 # --- Tutor Agent ---
 class TutorAgent:
     """Two-phase reasoning tutor with tool-calling and streaming answers."""
 
-    def __init__(self, model_name: str = "qwen2.5:3b-instruct-q5_K_M") -> None:
+    def __init__(self, model_name: str = "qwen2.5:3b-instruct-q5_K_M", enable_memori: bool = True, enable_dynamic_prompts: bool = True) -> None:
         logger.info(f"🚀 Initializing TutorAgent with model: {model_name}")
 
         self.llm = ChatOllama(model=model_name, temperature=0.1, stream=True)  # enable streaming
@@ -38,10 +44,38 @@ class TutorAgent:
         # Initialize MCP client (for web_search, time, weather)
         self.mcp_client = MCPClient(start=True)
 
+        # Initialize Memori for long-term memory management
+        self.memori_engine = None
+        if enable_memori:
+            try:
+                self.memori_engine = MemoriEngine(
+                    ollama_model=model_name,
+                    verbose=False  # Set to True for debugging
+                )
+                logger.info("✅ Memori long-term memory enabled")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize Memori: {e}")
+                logger.info("Continuing without Memori integration")
+
+        # PHASE 3: Initialize intent classification and dynamic prompts
+        self.enable_dynamic_prompts = enable_dynamic_prompts
+        self.intent_classifier = None
+        self.prompt_manager = None
+
+        if enable_dynamic_prompts:
+            try:
+                self.intent_classifier = IntentClassifier(model_name=model_name)
+                self.prompt_manager = DynamicPromptManager()
+                logger.info("✅ Dynamic prompts enabled (Phase 3)")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize dynamic prompts: {e}")
+                logger.info("Falling back to static prompts")
+                self.enable_dynamic_prompts = False
+
         # Load prompts from prompts.py
         self.think_prompt = THINK_PROMPT
         self.answer_prompt = ANSWER_PROMPT
-        
+
         # Optional: Allow dynamic prompt selection
         self.subject_focus = None  # Can be set to "math", "coding", etc.
         self.complexity_level = "standard"  # Can be "simple" or "standard"
@@ -216,89 +250,161 @@ class TutorAgent:
             if "think" in event:
                 print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
 
-    async def stream_phases(self, query: str, history: List[BaseMessage]) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield structured streaming events for frontend consumption.
         Event types:
-          thinking_start, thinking_delta, thinking_complete,
+          intent_detected, thinking_start, thinking_delta, thinking_complete,
           answer_start, answer_delta, answer_complete
         """
-        # Build history text
+        # Build history text and conversation list for intent classification
         history_lines = []
+        conversation_history = []
         for m in history:
             role = "User" if isinstance(m, HumanMessage) else "Tutor"
             history_lines.append(f"{role}: {m.content}")
+            conversation_history.append({
+                "role": "user" if isinstance(m, HumanMessage) else "assistant",
+                "content": m.content
+            })
         history_text = "\n".join(history_lines)
 
+        # ---- PHASE 3: INTENT CLASSIFICATION ----
+        intent_result = None
+        thinking_prompt_text = self.think_prompt
+        answer_prompt_text = self.answer_prompt
+        user_context = {}
+
+        if self.enable_dynamic_prompts and self.intent_classifier and self.prompt_manager:
+            try:
+                logger.info("🎯 Classifying user intent...")
+                intent_result = await self.intent_classifier.classify(query, conversation_history)
+
+                # Yield intent detection event
+                yield {
+                    "type": "intent_detected",
+                    "intent": str(intent_result.intent),
+                    "confidence": intent_result.confidence,
+                    "domain": str(intent_result.domain),
+                    "thinking_level": str(intent_result.thinking_level)
+                }
+
+                # Get user context from Memori if available
+                if self.memori_engine and user_id:
+                    try:
+                        # TODO: Add method to get user context from Memori
+                        # For now, use empty context
+                        user_context = {
+                            "learning_history": [],
+                            "preferences": {}
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not fetch user context from Memori: {e}")
+
+                # Get dynamic prompts based on intent
+                thinking_prompt_text, answer_prompt_text = self.prompt_manager.get_prompts(
+                    intent_result,
+                    query,
+                    user_context
+                )
+
+                logger.info(f"✅ Using dynamic prompts for intent: {intent_result.intent.name}")
+
+            except Exception as e:
+                logger.error(f"❌ Intent classification failed: {e}")
+                logger.info("Falling back to static prompts")
+                intent_result = None
+
+        # Determine if we should skip thinking phase
+        skip_thinking = (
+            intent_result and
+            intent_result.thinking_level == ThinkingLevel.NONE and
+            thinking_prompt_text == ""  # Dynamic prompt returned empty thinking prompt
+        )
+
         # ---- THINKING PHASE ----
-        think_prompt_text = self.think_prompt.format(chat_history=history_text)
+        think_prompt_text = thinking_prompt_text if isinstance(thinking_prompt_text, str) else self.think_prompt.format(chat_history=history_text)
         system_msg = SystemMessage(content=think_prompt_text)
         user_msg = HumanMessage(content=query)
 
-        yield {"type": "thinking_start"}
+        # Skip thinking phase for quick answers (ThinkingLevel.NONE)
         think_accum = ""
-        inside_think = False
-        try:
-            async for chunk in self.llm.astream([system_msg, user_msg]):
-                token = getattr(chunk, "content", "")
-                if not token:
-                    continue
-                think_accum += token
-                if "<THINK>" in token:
-                    inside_think = True
-                    token = token.split("<THINK>", 1)[-1]
-                if "</THINK>" in token:
-                    before_close, _ = token.split("</THINK>", 1)
-                    if inside_think and before_close:
-                        yield {"type": "thinking_delta", "delta": before_close}
-                    inside_think = False
-                    continue
-                if inside_think and token:
-                    yield {"type": "thinking_delta", "delta": token}
-        except Exception as e:
-            logger.exception("Thinking phase streaming failed: %s", e)
-
-        match = re.search(r"<THINK>(.*?)</THINK>", think_accum, re.DOTALL)
-        plan_core = match.group(1).strip() if match else think_accum.strip()
-
-        # Optional tool use (expanded for MCP tools)
-        need_search = bool(re.search(r"NEED_SEARCH:\s*yes", think_accum, re.IGNORECASE))
-        need_time = bool(re.search(r"NEED_TIME:\s*yes", think_accum, re.IGNORECASE))
-        need_weather = bool(re.search(r"NEED_WEATHER:\s*yes", think_accum, re.IGNORECASE))
-        search_block = ""
-        extra_blocks: List[str] = []
-        if need_search:
-            search_query_match = re.search(r"SEARCH_QUERY:\s*(.*)", think_accum, re.IGNORECASE)
-            search_query = (search_query_match.group(1).strip() if search_query_match else query) or query
+        if skip_thinking:
+            logger.info("⚡ Skipping thinking phase (quick answer mode)")
+            yield {"type": "thinking_start"}
+            yield {"type": "thinking_complete", "thinking_content": ""}
+            plan_full = ""
+        else:
+            yield {"type": "thinking_start"}
+            inside_think = False
             try:
-                tool_res = self._call_mcp_tool("search", {"query": search_query, "max_results": 5})
-                if not isinstance(tool_res, str):
-                    tool_res = json.dumps(tool_res, ensure_ascii=False)[:4000]
+                async for chunk in self.llm.astream([system_msg, user_msg]):
+                    token = getattr(chunk, "content", "")
+                    if not token:
+                        continue
+                    think_accum += token
+                    if "<THINK>" in token:
+                        inside_think = True
+                        token = token.split("<THINK>", 1)[-1]
+                    if "</THINK>" in token:
+                        before_close, _ = token.split("</THINK>", 1)
+                        if inside_think and before_close:
+                            yield {"type": "thinking_delta", "delta": before_close}
+                        inside_think = False
+                        continue
+                    if inside_think and token:
+                        yield {"type": "thinking_delta", "delta": token}
             except Exception as e:
-                tool_res = f"[Search Error] {e}"
-            search_block = f"\n\n<SEARCH_RESULTS>\nQuery: {search_query}\n{tool_res}\n</SEARCH_RESULTS>"
-        # memory block
-        with suppress(Exception):
-            mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
-            extra_blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
-        if need_time:
-            timezone_match = re.search(r"TIMEZONE:\s*([^\n]+)", think_accum, re.IGNORECASE)
-            timezone = timezone_match.group(1).strip() if timezone_match else None
+                logger.exception("Thinking phase streaming failed: %s", e)
+
+            match = re.search(r"<THINK>(.*?)</THINK>", think_accum, re.DOTALL)
+            plan_core = match.group(1).strip() if match else think_accum.strip()
+
+            # Optional tool use (expanded for MCP tools)
+            need_search = bool(re.search(r"NEED_SEARCH:\s*yes", think_accum, re.IGNORECASE))
+            need_time = bool(re.search(r"NEED_TIME:\s*yes", think_accum, re.IGNORECASE))
+            need_weather = bool(re.search(r"NEED_WEATHER:\s*yes", think_accum, re.IGNORECASE))
+            search_block = ""
+            extra_blocks: List[str] = []
+            if need_search:
+                search_query_match = re.search(r"SEARCH_QUERY:\s*(.*)", think_accum, re.IGNORECASE)
+                search_query = (search_query_match.group(1).strip() if search_query_match else query) or query
+                try:
+                    tool_res = self._call_mcp_tool("search", {"query": search_query, "max_results": 5})
+                    if not isinstance(tool_res, str):
+                        tool_res = json.dumps(tool_res, ensure_ascii=False)[:4000]
+                except Exception as e:
+                    tool_res = f"[Search Error] {e}"
+                search_block = f"\n\n<SEARCH_RESULTS>\nQuery: {search_query}\n{tool_res}\n</SEARCH_RESULTS>"
+            # memory block
             with suppress(Exception):
-                res = self._call_mcp_tool("time", {"timezone": timezone} if timezone else {})
-                extra_blocks.append(f"<TIME_RESULT>\n{json.dumps(res, ensure_ascii=False)}\n</TIME_RESULT>")
-        if need_weather:
-            weather_loc_match = re.search(r"WEATHER_LOCATION:\s*([^\n]+)", think_accum, re.IGNORECASE)
-            weather_loc = weather_loc_match.group(1).strip() if weather_loc_match else query
-            with suppress(Exception):
-                res = self._call_mcp_tool("weather", {"location": weather_loc})
-                extra_blocks.append(f"<WEATHER_RESULT>\n{json.dumps(res, ensure_ascii=False)[:4000]}\n</WEATHER_RESULT>")
-        search_block += ("\n" + "\n".join(extra_blocks)) if extra_blocks else ""
-        plan_full = plan_core + search_block
-        yield {"type": "thinking_complete", "thinking_content": plan_full}
+                mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
+                extra_blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
+            if need_time:
+                timezone_match = re.search(r"TIMEZONE:\s*([^\n]+)", think_accum, re.IGNORECASE)
+                timezone = timezone_match.group(1).strip() if timezone_match else None
+                with suppress(Exception):
+                    res = self._call_mcp_tool("time", {"timezone": timezone} if timezone else {})
+                    extra_blocks.append(f"<TIME_RESULT>\n{json.dumps(res, ensure_ascii=False)}\n</TIME_RESULT>")
+            if need_weather:
+                weather_loc_match = re.search(r"WEATHER_LOCATION:\s*([^\n]+)", think_accum, re.IGNORECASE)
+                weather_loc = weather_loc_match.group(1).strip() if weather_loc_match else query
+                with suppress(Exception):
+                    res = self._call_mcp_tool("weather", {"location": weather_loc})
+                    extra_blocks.append(f"<WEATHER_RESULT>\n{json.dumps(res, ensure_ascii=False)[:4000]}\n</WEATHER_RESULT>")
+            search_block += ("\n" + "\n".join(extra_blocks)) if extra_blocks else ""
+            plan_full = plan_core + search_block
+            yield {"type": "thinking_complete", "thinking_content": plan_full}
 
         # ---- ANSWER PHASE ----
-        answer_prompt_text = self.answer_prompt.format(plan=plan_full, chat_history=history_text)
-        answer_system = SystemMessage(content=answer_prompt_text)
+        # Use dynamic answer prompt if available, otherwise use static prompt
+        if answer_prompt_text and answer_prompt_text != self.answer_prompt:
+            # Dynamic prompt (doesn't need plan parameter since it's already embedded)
+            final_answer_prompt = answer_prompt_text
+        else:
+            # Static prompt (needs plan and chat_history parameters)
+            final_answer_prompt = self.answer_prompt.format(plan=plan_full, chat_history=history_text)
+
+        answer_system = SystemMessage(content=final_answer_prompt)
         yield {"type": "answer_start"}
         answer_accum = ""
         inside_answer = False
@@ -331,6 +437,80 @@ class TutorAgent:
         if not self.mcp_client or not self.mcp_client.alive:
             raise RuntimeError("MCP client not running")
         return self.mcp_client.call_tool(name, arguments)
+
+    # MEMORI INTEGRATION METHODS
+    def store_conversation_memory(
+        self,
+        user_id: str,
+        user_message: str,
+        assistant_response: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Store a conversation in Memori for long-term memory extraction.
+
+        Memori will automatically:
+        - Extract facts, preferences, and skills from the conversation
+        - Build entity relationships
+        - Make memories available for future context injection
+
+        Args:
+            user_id: User identifier
+            user_message: User's message
+            assistant_response: AI tutor's response
+            metadata: Optional metadata (topic_id, timestamp, etc.)
+
+        Returns:
+            Storage confirmation
+        """
+        if not self.memori_engine:
+            logger.debug("Memori not enabled, skipping memory storage")
+            return {"status": "skipped", "reason": "memori_disabled"}
+
+        try:
+            result = self.memori_engine.store_conversation(
+                user_id=user_id,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                metadata=metadata
+            )
+            logger.debug(f"✅ Stored conversation in Memori for user {user_id}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to store in Memori: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def add_user_learning_preference(
+        self,
+        user_id: str,
+        preference: str,
+        category: str = "learning_preference"
+    ) -> Dict[str, Any]:
+        """
+        Explicitly store a user's learning preference in Memori.
+
+        Args:
+            user_id: User identifier
+            preference: Preference description
+            category: Category of preference
+
+        Returns:
+            Storage confirmation
+        """
+        if not self.memori_engine:
+            return {"status": "skipped", "reason": "memori_disabled"}
+
+        try:
+            result = self.memori_engine.add_user_preference(
+                user_id=user_id,
+                preference=preference,
+                category=category
+            )
+            logger.info(f"✅ Added learning preference for user {user_id}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to add preference: {e}")
+            return {"status": "error", "error": str(e)}
 
 
 # MCP CLIENT IMPLEMENTATION
