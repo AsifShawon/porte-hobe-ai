@@ -4,17 +4,20 @@ import * as React from "react"
 import {
   BookOpen,
   Bot,
-  Frame,
   Map,
-  PieChart,
   Settings2,
   SquareTerminal,
+  Target,
+  Trophy,
+  Flame,
+  FileText,
+  TrendingUp,
+  Sparkles,
 } from "lucide-react"
 
 import { NavMain } from "@/components/nav-main"
 import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
-import { TeamSwitcher } from "@/components/team-switcher"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -33,18 +36,18 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
-// This is sample data for Autonomous Teaching Assistant.
+// This is sample data for Autonomous Learning Platform.
 const data = {
   user: {
-    name: "Teacher Name",
-    email: "teacher@example.com",
-    avatar: "/avatars/teacher.jpg",
+    name: "Student Name",
+    email: "student@example.com",
+    avatar: "/avatars/student.jpg",
   },
   teams: [
     {
-      name: "Teaching Assistant",
-      logo: BookOpen,
-      plan: "Pro",
+      name: "PorteHobeAI",
+      logo: Sparkles,
+      plan: "Learning",
     },
   ],
   navMain: [
@@ -65,7 +68,7 @@ const data = {
       ],
     },
     {
-      title: "AI Tutor Chat",
+      title: "AI Tutor",
       url: "/dashboard/chat",
       icon: Bot,
       items: [
@@ -77,77 +80,139 @@ const data = {
           title: "Chat History",
           url: "/dashboard/chat/history",
         },
+        {
+          title: "Quick Ask",
+          url: "/dashboard/chat/quick",
+        },
       ],
     },
     {
-      title: "Topics",
-      url: "/dashboard/topics",
+      title: "My Learning",
+      url: "/dashboard/learning",
       icon: BookOpen,
       items: [
+        {
+          title: "Learning Path",
+          url: "/dashboard/learning/path",
+        },
+        {
+          title: "Current Topics",
+          url: "/dashboard/learning/current",
+        },
         {
           title: "Browse Topics",
           url: "/dashboard/topics",
         },
         {
-          title: "My Progress",
-          url: "/dashboard",
+          title: "Completed",
+          url: "/dashboard/learning/completed",
         },
       ],
     },
     {
-      title: "Lessons",
-      url: "/dashboard/lessons",
-      icon: Map,
+      title: "Practice",
+      url: "/dashboard/practice",
+      icon: Target,
       items: [
         {
-          title: "All Lessons",
-          url: "/dashboard/lessons",
+          title: "All Exercises",
+          url: "/dashboard/practice/exercises",
         },
         {
-          title: "Create Lesson",
-          url: "/dashboard/lessons/create",
+          title: "Coding Challenges",
+          url: "/dashboard/practice/challenges",
         },
         {
-          title: "Lesson Plans",
-          url: "/dashboard/lessons/plans",
+          title: "Quizzes",
+          url: "/dashboard/practice/quizzes",
+        },
+        {
+          title: "Past Attempts",
+          url: "/dashboard/practice/history",
         },
       ],
     },
     {
-      title: "Students",
-      url: "/dashboard/students",
-      icon: Bot,
+      title: "Achievements",
+      url: "/dashboard/achievements",
+      icon: Trophy,
       items: [
         {
-          title: "Student List",
-          url: "/dashboard/students",
+          title: "My Badges",
+          url: "/dashboard/achievements/badges",
         },
         {
-          title: "Progress Reports",
-          url: "/dashboard/students/progress",
+          title: "Milestones",
+          url: "/dashboard/achievements/milestones",
         },
         {
-          title: "Assignments",
-          url: "/dashboard/students/assignments",
+          title: "Certificates",
+          url: "/dashboard/achievements/certificates",
         },
       ],
     },
     {
-      title: "Analytics",
-      url: "/dashboard/analytics",
-      icon: PieChart,
+      title: "My Progress",
+      url: "/dashboard/progress",
+      icon: TrendingUp,
       items: [
+        {
+          title: "Overall Stats",
+          url: "/dashboard/progress",
+        },
+        {
+          title: "Topic Progress",
+          url: "/dashboard/progress/topics",
+        },
         {
           title: "Performance",
-          url: "/dashboard/analytics/performance",
+          url: "/dashboard/progress/performance",
         },
         {
-          title: "Engagement",
-          url: "/dashboard/analytics/engagement",
+          title: "Study Time",
+          url: "/dashboard/progress/time",
+        },
+      ],
+    },
+    {
+      title: "Resources",
+      url: "/dashboard/resources",
+      icon: FileText,
+      items: [
+        {
+          title: "Saved Materials",
+          url: "/dashboard/resources/saved",
         },
         {
-          title: "Reports",
-          url: "/dashboard/analytics/reports",
+          title: "My Notes",
+          url: "/dashboard/resources/notes",
+        },
+        {
+          title: "Bookmarks",
+          url: "/dashboard/resources/bookmarks",
+        },
+        {
+          title: "Uploaded Files",
+          url: "/dashboard/resources/files",
+        },
+      ],
+    },
+    {
+      title: "Study Goals",
+      url: "/dashboard/goals",
+      icon: Flame,
+      items: [
+        {
+          title: "Active Goals",
+          url: "/dashboard/goals",
+        },
+        {
+          title: "Set New Goal",
+          url: "/dashboard/goals/new",
+        },
+        {
+          title: "Goal History",
+          url: "/dashboard/goals/history",
         },
       ],
     },
@@ -157,35 +222,39 @@ const data = {
       icon: Settings2,
       items: [
         {
-          title: "General",
-          url: "/dashboard/settings/general",
+          title: "Profile",
+          url: "/dashboard/settings/profile",
+        },
+        {
+          title: "Learning Preferences",
+          url: "/dashboard/settings/preferences",
         },
         {
           title: "Notifications",
           url: "/dashboard/settings/notifications",
         },
         {
-          title: "Account",
-          url: "/dashboard/settings/account",
+          title: "Privacy",
+          url: "/dashboard/settings/privacy",
         },
       ],
     },
   ],
   projects: [
     {
-      name: "Current Course",
-      url: "/dashboard/courses/current",
-      icon: Frame,
-    },
-    {
-      name: "Upcoming Lessons",
-      url: "/dashboard/lessons/upcoming",
-      icon: PieChart,
-    },
-    {
-      name: "Student Feedback",
-      url: "/dashboard/feedback",
+      name: "Current Learning Path",
+      url: "/dashboard/learning/path",
       icon: Map,
+    },
+    {
+      name: "Study Streak",
+      url: "/dashboard/streak",
+      icon: Flame,
+    },
+    {
+      name: "Recent Achievements",
+      url: "/dashboard/achievements",
+      icon: Trophy,
     },
   ],
 }
