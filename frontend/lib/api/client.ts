@@ -3,14 +3,14 @@
  * Handles authentication and request/response formatting
  */
 
-import { createClient } from '@/lib/supabase/client';
+import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ApiError } from '@/types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
 
 export class ApiClient {
   private async getAuthToken(): Promise<string | null> {
-    const supabase = createClient();
+    const supabase = createSupabaseBrowserClient();
     const { data: { session } } = await supabase.auth.getSession();
     return session?.access_token || null;
   }
