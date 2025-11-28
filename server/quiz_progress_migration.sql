@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS learning_roadmaps (
     status VARCHAR(50) DEFAULT 'active', -- 'active', 'completed', 'paused', 'abandoned'
 
     -- Link to conversation where roadmap was created
-    conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+    conversation_id UUID, -- Will reference conversations table when it exists
     chat_session_id UUID REFERENCES chat_sessions(id) ON DELETE SET NULL,
 
     -- Metadata
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS conversation_quizzes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     roadmap_id UUID REFERENCES learning_roadmaps(id) ON DELETE CASCADE,
-    conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+    conversation_id UUID, -- Will reference conversations table when it exists
 
     -- Quiz details
     title VARCHAR(200) NOT NULL,
