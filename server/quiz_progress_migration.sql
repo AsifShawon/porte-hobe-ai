@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS learning_roadmaps (
     )
 );
 
+-- Ensure columns exist (for migration safety)
+ALTER TABLE learning_roadmaps ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';
+ALTER TABLE learning_roadmaps ADD COLUMN IF NOT EXISTS conversation_id UUID;
+ALTER TABLE learning_roadmaps ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE learning_roadmaps ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS learning_roadmaps_user_id_idx ON learning_roadmaps(user_id);
 CREATE INDEX IF NOT EXISTS learning_roadmaps_status_idx ON learning_roadmaps(status);
 CREATE INDEX IF NOT EXISTS learning_roadmaps_created_at_idx ON learning_roadmaps(created_at DESC);
@@ -201,6 +207,14 @@ CREATE TABLE IF NOT EXISTS conversation_quizzes (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Ensure roadmap_id column exists (for migration safety)
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS roadmap_id UUID REFERENCES learning_roadmaps(id) ON DELETE CASCADE;
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS phase_id VARCHAR(100);
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS milestone_id VARCHAR(100);
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'not_started';
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS difficulty VARCHAR(50) DEFAULT 'beginner';
+ALTER TABLE conversation_quizzes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS conversation_quizzes_user_id_idx ON conversation_quizzes(user_id);
 CREATE INDEX IF NOT EXISTS conversation_quizzes_roadmap_id_idx ON conversation_quizzes(roadmap_id);
 CREATE INDEX IF NOT EXISTS conversation_quizzes_conversation_idx ON conversation_quizzes(conversation_id);
@@ -308,6 +322,12 @@ CREATE TABLE IF NOT EXISTS quiz_attempts (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Ensure roadmap_id column exists (for migration safety)
+ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS roadmap_id UUID REFERENCES learning_roadmaps(id) ON DELETE SET NULL;
+ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'in_progress';
+ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS passed BOOLEAN DEFAULT FALSE;
+ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS quiz_attempts_user_id_idx ON quiz_attempts(user_id);
 CREATE INDEX IF NOT EXISTS quiz_attempts_quiz_id_idx ON quiz_attempts(quiz_id);
 CREATE INDEX IF NOT EXISTS quiz_attempts_roadmap_id_idx ON quiz_attempts(roadmap_id);
@@ -371,6 +391,12 @@ CREATE TABLE IF NOT EXISTS milestone_progress (
 
     CONSTRAINT unique_user_milestone UNIQUE(user_id, roadmap_id, phase_id, milestone_id)
 );
+
+-- Ensure roadmap_id column exists (for migration safety)
+ALTER TABLE milestone_progress ADD COLUMN IF NOT EXISTS roadmap_id UUID REFERENCES learning_roadmaps(id) ON DELETE CASCADE;
+ALTER TABLE milestone_progress ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'not_started';
+ALTER TABLE milestone_progress ADD COLUMN IF NOT EXISTS phase_id VARCHAR(100);
+ALTER TABLE milestone_progress ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS milestone_progress_user_id_idx ON milestone_progress(user_id);
 CREATE INDEX IF NOT EXISTS milestone_progress_roadmap_id_idx ON milestone_progress(roadmap_id);
