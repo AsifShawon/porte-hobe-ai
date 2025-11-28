@@ -337,14 +337,16 @@ export default function ChatPage() {
 
     try {
       const request: CreateRoadmapRequest = {
-        goal: pendingRoadmapTrigger.query,
+        user_goal: pendingRoadmapTrigger.query,
         domain: pendingRoadmapTrigger.domain as 'programming' | 'math' | 'general',
-        user_level: pendingRoadmapTrigger.user_level as 'beginner' | 'intermediate' | 'advanced',
         conversation_history: messages.map(m => ({
           role: m.role,
           content: m.content
         })),
-        focus_areas: pendingRoadmapTrigger.topic ? [pendingRoadmapTrigger.topic] : []
+        user_context: {
+          user_level: pendingRoadmapTrigger.user_level,
+          focus_areas: pendingRoadmapTrigger.topic ? [pendingRoadmapTrigger.topic] : []
+        }
       }
 
       const roadmap = await createRoadmap(request)
@@ -375,7 +377,6 @@ export default function ChatPage() {
         conversation_context: messages.slice(-5).map(m => `${m.role}: ${m.content}`).join('\n'),
         num_questions: 5,
         difficulty: 'beginner',  // Could be inferred from conversation
-        domain: pendingQuizOffer.domain as 'programming' | 'math' | 'general'
       }
 
       const result = await generateQuiz(request)
