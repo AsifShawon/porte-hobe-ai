@@ -7,12 +7,18 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Send, Bot, User, Loader2, Sparkles, History } from "lucide-react"
+import { Card } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Send, Bot, User, Loader2, Sparkles, History, Map, FileQuestion, CheckCircle2 } from "lucide-react"
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import 'katex/dist/katex.min.css'
+import { useRoadmaps } from '@/hooks/useRoadmap'
+import { useQuizzes } from '@/hooks/useQuiz'
+import type { CreateRoadmapRequest } from '@/types/roadmap'
+import type { GenerateQuizRequest } from '@/types/quiz'
 
 interface Message {
   id: string
@@ -22,6 +28,22 @@ interface Message {
   type?: 'thinking' | 'final_answer' | 'complete'
   thinking_content?: string
   request_id?: string
+  roadmap_trigger?: RoadmapTrigger
+  quiz_offer?: QuizOffer
+}
+
+interface RoadmapTrigger {
+  topic: string | null
+  domain: string
+  user_level: string
+  query: string
+}
+
+interface QuizOffer {
+  topic: string | null
+  domain: string
+  trigger_reason: string
+  subtopics?: string[]
 }
 
 // Client-side only timestamp component to avoid hydration mismatch
@@ -64,6 +86,12 @@ export default function ChatPage() {
   const [openThinking, setOpenThinking] = useState<{[key: string]: boolean}>({})
   const [conversationId, setConversationId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Roadmap and Quiz state
+  const [pendingRoadmapTrigger, setPendingRoadmapTrigger] = useState<RoadmapTrigger | null>(null)
+  const [pendingQuizOffer, setPendingQuizOffer] = useState<QuizOffer | null>(null)
+  const { createRoadmap } = useRoadmaps()
+  const { generateQuiz } = useQuizzes()
 
   // Check for continued conversation from history
   useEffect(() => {
@@ -250,6 +278,26 @@ export default function ChatPage() {
                 })()
                 break
               }
+              case 'roadmap_trigger': {
+                // Store roadmap trigger data to show prompt
+                setPendingRoadmapTrigger({
+                  topic: evt.topic,
+                  domain: evt.domain,
+                  user_level: evt.user_level,
+                  query: evt.query
+                })
+                break
+              }
+              case 'quiz_offer': {
+                // Store quiz offer data to show prompt
+                setPendingQuizOffer({
+                  topic: evt.topic,
+                  domain: evt.domain,
+                  trigger_reason: evt.trigger_reason,
+                  subtopics: evt.subtopics
+                })
+                break
+              }
               case 'error': {
                 setCurrentThinkingMessage(null)
                 const errMsg: Message = {
@@ -282,6 +330,79 @@ export default function ChatPage() {
       e.preventDefault()
       sendMessage()
     }
+  }
+
+  const handleGenerateRoadmap = async () => {
+    if (!pendingRoadmapTrigger) return
+
+    try {
+      const request: CreateRoadmapRequest = {
+        goal: pendingRoadmapTrigger.query,
+        domain: pendingRoadmapTrigger.domain as 'programming' | 'math' | 'general',
+        user_level: pendingRoadmapTrigger.user_level as 'beginner' | 'intermediate' | 'advanced',
+        conversation_history: messages.map(m => ({
+          role: m.role,
+          content: m.content
+        })),
+        focus_areas: pendingRoadmapTrigger.topic ? [pendingRoadmapTrigger.topic] : []
+      }
+
+      const roadmap = await createRoadmap(request)
+
+      if (roadmap) {
+        // Add success message
+        const successMsg: Message = {
+          id: Date.now().toString(),
+          content: `✅ I've created a personalized learning roadmap for "${roadmap.title}"! You can view it in your [Progress page](/dashboard/progress).`,
+          role: 'assistant',
+          timestamp: new Date(),
+          type: 'final_answer'
+        }
+        setMessages(prev => [...prev, successMsg])
+        setPendingRoadmapTrigger(null)
+      }
+    } catch (error) {
+      console.error('Failed to generate roadmap:', error)
+    }
+  }
+
+  const handleGenerateQuiz = async () => {
+    if (!pendingQuizOffer) return
+
+    try {
+      const request: GenerateQuizRequest = {
+        topics: pendingQuizOffer.subtopics || (pendingQuizOffer.topic ? [pendingQuizOffer.topic] : []),
+        conversation_context: messages.slice(-5).map(m => `${m.role}: ${m.content}`).join('\n'),
+        num_questions: 5,
+        difficulty: 'beginner',  // Could be inferred from conversation
+        domain: pendingQuizOffer.domain as 'programming' | 'math' | 'general'
+      }
+
+      const result = await generateQuiz(request)
+
+      if (result) {
+        // Add success message
+        const successMsg: Message = {
+          id: Date.now().toString(),
+          content: `📝 I've created a quiz on "${pendingQuizOffer.topic}"! You can find it in your [Quiz Library](/dashboard/quiz).`,
+          role: 'assistant',
+          timestamp: new Date(),
+          type: 'final_answer'
+        }
+        setMessages(prev => [...prev, successMsg])
+        setPendingQuizOffer(null)
+      }
+    } catch (error) {
+      console.error('Failed to generate quiz:', error)
+    }
+  }
+
+  const handleDismissRoadmap = () => {
+    setPendingRoadmapTrigger(null)
+  }
+
+  const handleDismissQuiz = () => {
+    setPendingQuizOffer(null)
   }
 
   const CodeBlock = ({ language, children }: {
@@ -528,6 +649,80 @@ export default function ChatPage() {
           <div ref={messagesEndRef} className="h-0" />
         </div>
       </div>
+
+      {/* Roadmap Generation Prompt */}
+      {pendingRoadmapTrigger && (
+        <div className="p-3 sm:p-4 border-t bg-blue-50 dark:bg-blue-950/20">
+          <Card className="p-4 border-blue-200 dark:border-blue-800 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-blue-100 dark:bg-blue-900 p-2">
+                <Map className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-sm mb-1">🗺️ Create Learning Roadmap?</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  I can create a personalized learning roadmap for <strong>{pendingRoadmapTrigger.topic || 'this topic'}</strong>
+                  {' '}({pendingRoadmapTrigger.domain}) at a {pendingRoadmapTrigger.user_level} level.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleGenerateRoadmap}
+                    size="sm"
+                    className="bg-blue-600 hover:bg-blue-700"
+                  >
+                    <CheckCircle2 className="h-4 w-4 mr-1" />
+                    Create Roadmap
+                  </Button>
+                  <Button
+                    onClick={handleDismissRoadmap}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Not now
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Quiz Offer Prompt */}
+      {pendingQuizOffer && (
+        <div className="p-3 sm:p-4 border-t bg-green-50 dark:bg-green-950/20">
+          <Card className="p-4 border-green-200 dark:border-green-800 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-green-100 dark:bg-green-900 p-2">
+                <FileQuestion className="h-5 w-5 text-green-600 dark:text-green-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-sm mb-1">📝 Test Your Knowledge?</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Ready to practice what you've learned about <strong>{pendingQuizOffer.topic || 'this topic'}</strong>?
+                  I can generate a quiz to help reinforce your understanding.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleGenerateQuiz}
+                    size="sm"
+                    className="bg-green-600 hover:bg-green-700"
+                  >
+                    <FileQuestion className="h-4 w-4 mr-1" />
+                    Generate Quiz
+                  </Button>
+                  <Button
+                    onClick={handleDismissQuiz}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Maybe later
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Input */}
       <div className="p-3 sm:p-4 border-t bg-background shrink-0">
