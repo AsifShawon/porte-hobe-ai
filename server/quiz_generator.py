@@ -4,7 +4,7 @@ Generates contextual quizzes based on conversation content and learning progress
 """
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -131,13 +131,13 @@ Return a JSON object:
 """
 
     def __init__(self):
-        """Initialize the quiz generator with Gemini Flash model"""
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+        """Initialize the quiz generator with local Ollama model"""
+        self.llm = ChatOllama(
+            model="qwen2.5:3b-instruct-q5_K_M",
             temperature=0.7,
-            max_output_tokens=3072
+            num_predict=3072
         )
-        logger.info("QuizGeneratorAgent initialized")
+        logger.info("QuizGeneratorAgent initialized with local Ollama model")
 
     async def generate_quiz(
         self,

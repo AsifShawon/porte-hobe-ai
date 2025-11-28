@@ -4,7 +4,7 @@ AI-powered grading system for quiz answers including subjective and code questio
 """
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -87,13 +87,13 @@ Return JSON:
 """
 
     def __init__(self):
-        """Initialize the quiz grader with Gemini model"""
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            temperature=0.3,  # Lower temperature for more consistent grading
-            max_output_tokens=2048
+        """Initialize the quiz grader with local Ollama verification model"""
+        self.llm = ChatOllama(
+            model="gemma3:4b",  # Using verification model for consistent, accurate grading
+            temperature=0.1,  # Lower temperature for more consistent grading
+            num_predict=2048
         )
-        logger.info("QuizGraderAgent initialized")
+        logger.info("QuizGraderAgent initialized with local Ollama verification model (gemma3:4b)")
 
     async def grade_answer(
         self,

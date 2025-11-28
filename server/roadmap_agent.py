@@ -4,7 +4,7 @@ Analyzes user conversations and goals to generate personalized learning roadmaps
 """
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -110,13 +110,13 @@ Return the UPDATED roadmap in the same JSON format as before.
 """
 
     def __init__(self):
-        """Initialize the roadmap generator with Gemini Flash model"""
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+        """Initialize the roadmap generator with local Ollama model"""
+        self.llm = ChatOllama(
+            model="qwen2.5:3b-instruct-q5_K_M",
             temperature=0.7,
-            max_output_tokens=4096
+            num_predict=4096
         )
-        logger.info("RoadmapGeneratorAgent initialized")
+        logger.info("RoadmapGeneratorAgent initialized with local Ollama model")
 
     async def generate_roadmap(
         self,
