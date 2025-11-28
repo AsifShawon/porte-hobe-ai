@@ -409,31 +409,31 @@ CREATE POLICY "Users can delete their own milestone progress"
 CREATE OR REPLACE FUNCTION calculate_roadmap_progress(p_roadmap_id UUID)
 RETURNS FLOAT AS $$
 DECLARE
-    total_milestones INTEGER;
-    completed_milestones INTEGER;
-    progress FLOAT;
+    v_total_milestones INTEGER;
+    v_completed_milestones INTEGER;
+    v_progress FLOAT;
 BEGIN
     -- Count total and completed milestones
     SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'completed')
-    INTO total_milestones, completed_milestones
+    INTO v_total_milestones, v_completed_milestones
     FROM milestone_progress
     WHERE roadmap_id = p_roadmap_id;
 
-    IF total_milestones = 0 THEN
+    IF v_total_milestones = 0 THEN
         RETURN 0.0;
     END IF;
 
-    progress := (completed_milestones::FLOAT / total_milestones::FLOAT) * 100.0;
+    v_progress := (v_completed_milestones::FLOAT / v_total_milestones::FLOAT) * 100.0;
 
     -- Update roadmap table
     UPDATE learning_roadmaps
     SET
-        completed_milestones = completed_milestones,
-        progress_percentage = progress,
+        completed_milestones = v_completed_milestones,
+        progress_percentage = v_progress,
         updated_at = NOW()
     WHERE id = p_roadmap_id;
 
-    RETURN progress;
+    RETURN v_progress;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
