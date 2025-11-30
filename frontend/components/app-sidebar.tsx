@@ -80,35 +80,35 @@ const data = {
           title: "Chat History",
           url: "/dashboard/chat/history",
         },
-        {
-          title: "Quick Ask",
-          url: "/dashboard/chat/quick",
-        },
+        // {
+        //   title: "Quick Ask",
+        //   url: "/dashboard/chat/quick",
+        // },
       ],
     },
-    {
-      title: "My Learning",
-      url: "/dashboard/learning",
-      icon: BookOpen,
-      items: [
-        {
-          title: "Learning Path",
-          url: "/dashboard/learning/path",
-        },
-        {
-          title: "Current Topics",
-          url: "/dashboard/learning/current",
-        },
-        {
-          title: "Browse Topics",
-          url: "/dashboard/topics",
-        },
-        {
-          title: "Completed",
-          url: "/dashboard/learning/completed",
-        },
-      ],
-    },
+    // {
+    //   title: "My Learning",
+    //   url: "/dashboard/learning",
+    //   icon: BookOpen,
+    //   items: [
+    //     {
+    //       title: "Learning Path",
+    //       url: "/dashboard/learning/path",
+    //     },
+    //     {
+    //       title: "Current Topics",
+    //       url: "/dashboard/learning/current",
+    //     },
+    //     {
+    //       title: "Browse Topics",
+    //       url: "/dashboard/topics",
+    //     },
+    //     {
+    //       title: "Completed",
+    //       url: "/dashboard/learning/completed",
+    //     },
+    //   ],
+    // },
     {
       title: "Practice",
       url: "/dashboard/practice",
@@ -132,25 +132,25 @@ const data = {
         },
       ],
     },
-    {
-      title: "Achievements",
-      url: "/dashboard/achievements",
-      icon: Trophy,
-      items: [
-        {
-          title: "My Badges",
-          url: "/dashboard/achievements/",
-        },
-        {
-          title: "Milestones",
-          url: "/dashboard/achievements/milestones",
-        },
-        {
-          title: "Certificates",
-          url: "/dashboard/achievements/certificates",
-        },
-      ],
-    },
+    // {
+    //   title: "Achievements",
+    //   url: "/dashboard/achievements",
+    //   icon: Trophy,
+    //   items: [
+    //     {
+    //       title: "My Badges",
+    //       url: "/dashboard/achievements/",
+    //     },
+    //     {
+    //       title: "Milestones",
+    //       url: "/dashboard/achievements/milestones",
+    //     },
+    //     {
+    //       title: "Certificates",
+    //       url: "/dashboard/achievements/certificates",
+    //     },
+    //   ],
+    // },
     {
       title: "My Progress",
       url: "/dashboard/progress",
