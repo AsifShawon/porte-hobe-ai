@@ -20,12 +20,14 @@ import type { ApiError } from '@/types/common';
 /**
  * Hook to fetch and manage quizzes (quiz library)
  */
-export function useQuizzes(filters?: QuizFilters) {
+export function useQuizzes(filters?: QuizFilters, options: { enabled?: boolean } = { enabled: true }) {
   const [quizzes, setQuizzes] = useState<ConversationQuiz[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(options.enabled);
   const [error, setError] = useState<ApiError | null>(null);
 
   const fetchQuizzes = useCallback(async () => {
+    if (!options.enabled) return;
+
     try {
       setLoading(true);
       setError(null);
@@ -41,7 +43,7 @@ export function useQuizzes(filters?: QuizFilters) {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, options.enabled]);
 
   useEffect(() => {
     fetchQuizzes();

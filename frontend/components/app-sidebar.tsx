@@ -161,6 +161,10 @@ const data = {
           url: "/dashboard/progress",
         },
         {
+          title: "Roadmaps",
+          url: "/dashboard/my-progress/roadmaps",
+        },
+        {
           title: "Topic Progress",
           url: "/dashboard/progress/topics",
         },

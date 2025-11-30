@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 interface PhaseCardProps {
   phase: Phase;
   phaseNumber: number;
+  roadmapId?: string;
   isCompleted: boolean;
   isActive: boolean;
   isLocked: boolean;
@@ -26,6 +27,7 @@ interface PhaseCardProps {
 export function PhaseCard({
   phase,
   phaseNumber,
+  roadmapId,
   isCompleted,
   isActive,
   isLocked,
@@ -121,6 +123,7 @@ export function PhaseCard({
                 key={milestone.id}
                 milestone={milestone}
                 phaseId={phase.id}
+                roadmapId={roadmapId}
                 milestoneNumber={index + 1}
                 onClick={() => onMilestoneClick?.(phase.id, milestone.id)}
                 onComplete={() => onMilestoneComplete?.(phase.id, milestone.id)}

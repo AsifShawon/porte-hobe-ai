@@ -5,7 +5,8 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useActiveRoadmap, useRoadmaps, useRoadmapStats } from '@/hooks/useRoadmap';
 import { RoadmapTimeline } from '@/components/roadmap/RoadmapTimeline';
 import { QuizTriggerDialog } from '@/components/roadmap/QuizTriggerDialog';
@@ -47,11 +48,22 @@ export default function ProgressPage() {
     refetch,
   } = useRoadmaps(selectedStatus !== 'all' ? { status: selectedStatus } : undefined);
 
-  // Handle milestone click (navigate to content)
-  const handleMilestoneClick = (phaseId: string, milestoneId: string) => {
-    console.log('Navigate to milestone:', phaseId, milestoneId);
-    // TODO: Navigate to learning content or quiz
-  };
+  const router = useRouter();
+
+  // Milestone click: redirect to chat with auto_query prompt
+  const handleMilestoneClick = useCallback((phaseId: string, milestoneId: string) => {
+    if (!activeRoadmap) return;
+    const phase = activeRoadmap.roadmap_data.phases.find(p => p.id === phaseId);
+    const milestone = phase?.milestones.find(m => m.id === milestoneId);
+    if (!phase || !milestone) return;
+
+    const topicsStr = milestone.topics && milestone.topics.length ? milestone.topics.join(', ') : 'general fundamentals';
+    const lessonPrompt = `You are my autonomous tutor. Teach milestone "${milestone.title}" from roadmap "${activeRoadmap.title}" (Phase: ${phase.title}).\nLearning objectives: ${milestone.description || 'Provide clear, structured guidance.'}\nTopics: ${topicsStr}.\nProvide:\n1. Concise overview\n2. Key concepts with examples\n3. Step-by-step explanation\n4. One interactive question (wait for my answer)\n5. Quick recap.\nAdapt depth to a beginner unless content implies otherwise.`;
+    const quizPrompt = `Prepare me for quiz milestone "${milestone.title}" in roadmap "${activeRoadmap.title}" (Phase: ${phase.title}). Topics: ${topicsStr}. Provide:\n1. Key concept summary\n2. Common pitfalls\n3. 3 practice questions (wait for answers one by one)\n4. Final readiness check.`;
+    const prompt = milestone.type === 'quiz' ? quizPrompt : lessonPrompt;
+    const url = `/dashboard/chat?auto_query=${encodeURIComponent(prompt)}&roadmap_id=${activeRoadmap.id}&phase_id=${phaseId}&milestone_id=${milestoneId}` + (activeRoadmap.conversation_id ? `&conversation_id=${activeRoadmap.conversation_id}` : '');
+    router.push(url);
+  }, [activeRoadmap, router]);
 
   // Handle milestone completion
   const handleMilestoneComplete = async (phaseId: string, milestoneId: string) => {

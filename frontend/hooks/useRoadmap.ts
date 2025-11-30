@@ -19,12 +19,14 @@ import type { ApiError } from '@/types/common';
 /**
  * Hook to fetch and manage roadmaps
  */
-export function useRoadmaps(filters?: RoadmapFilters) {
+export function useRoadmaps(filters?: RoadmapFilters, options: { enabled?: boolean } = { enabled: true }) {
   const [roadmaps, setRoadmaps] = useState<LearningRoadmap[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(options.enabled);
   const [error, setError] = useState<ApiError | null>(null);
 
   const fetchRoadmaps = useCallback(async () => {
+    if (!options.enabled) return;
+
     try {
       setLoading(true);
       setError(null);
@@ -40,7 +42,7 @@ export function useRoadmaps(filters?: RoadmapFilters) {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, options.enabled]);
 
   useEffect(() => {
     fetchRoadmaps();

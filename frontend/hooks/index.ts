@@ -8,3 +8,4 @@ export * from './useAchievements';
 export * from './usePractice';
 export * from './useResources';
 export * from './useProgress';
+export * from './useStartLearning';

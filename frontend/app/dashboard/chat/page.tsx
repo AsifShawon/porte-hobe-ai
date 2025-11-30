@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useAuth } from '@/components/auth-provider'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from "@/components/ui/button"
@@ -15,10 +15,11 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import 'katex/dist/katex.min.css'
-import { useRoadmaps } from '@/hooks/useRoadmap'
+import { useRoadmaps, useRoadmap } from '@/hooks/useRoadmap'
 import { useQuizzes } from '@/hooks/useQuiz'
 import type { CreateRoadmapRequest } from '@/types/roadmap'
 import type { GenerateQuizRequest } from '@/types/quiz'
+import { createSupabaseBrowserClient } from '@/lib/supabase/client'
 
 interface Message {
   id: string
@@ -88,69 +89,136 @@ export default function ChatPage() {
   const [currentThinkingMessage, setCurrentThinkingMessage] = useState<Message | null>(null)
   const [openThinking, setOpenThinking] = useState<{[key: string]: boolean}>({})
   const [conversationId, setConversationId] = useState<string | null>(null)
-  const [roadmapId, setRoadmapId] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const autoStartedRef = useRef(false)
 
   // Roadmap and Quiz state
   const [pendingRoadmapTrigger, setPendingRoadmapTrigger] = useState<RoadmapTrigger | null>(null)
   const [pendingQuizOffer, setPendingQuizOffer] = useState<QuizOffer | null>(null)
-  const { createRoadmap } = useRoadmaps()
-  const { generateQuiz } = useQuizzes()
+  const { createRoadmap } = useRoadmaps(undefined, { enabled: false })
+  const { generateQuiz } = useQuizzes(undefined, { enabled: false })
+  // Milestone context from query params
+  const milestoneRoadmapId = searchParams.get('roadmap_id') || searchParams.get('roadmap')
+  const milestonePhaseId = searchParams.get('phase_id') || searchParams.get('phase')
+  const milestoneId = searchParams.get('milestone_id') || searchParams.get('milestone')
+  const milestoneTitle = searchParams.get('milestone_title') || undefined
+  const { completeMilestone, startMilestone, refetch: refetchRoadmap } = useRoadmap(milestoneRoadmapId)
+  const [isCompleting, setIsCompleting] = useState(false)
+  const [showMilestoneBanner, setShowMilestoneBanner] = useState<boolean>(
+    Boolean(milestoneRoadmapId && milestonePhaseId && milestoneId)
+  )
 
   // Check for roadmap/conversation linking from URL params
   useEffect(() => {
-    const roadmap = searchParams.get('roadmap')
     const conversation = searchParams.get('conversation_id')
-
-    if (roadmap) {
-      setRoadmapId(roadmap)
-    }
     if (conversation && !conversationId) {
       setConversationId(conversation)
     }
   }, [searchParams, conversationId])
 
-  // Check for continued conversation from history
+  // Check for continued conversation from history (new unified tables)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const continueData = sessionStorage.getItem('continueChat')
-      if (continueData) {
-        try {
-          const parsed = JSON.parse(continueData) as { conversationId?: string; messages?: unknown }
-          const { conversationId: convId, messages: historyMessages } = parsed
-          setConversationId(convId ?? null)
-          
-          type HistoryItem = {
-            id?: string
-            message?: string
-            content?: string
-            role?: 'user' | 'assistant' | string
-            created_at?: string | number
+    const loadHistory = async () => {
+      try {
+        const conv = searchParams.get('conversation_id') || conversationId
+        if (conv) {
+          const supabase = createSupabaseBrowserClient()
+
+          // Find session by legacy conversation_id
+          const { data: sessionRows, error: sessionErr } = await supabase
+            .from('chat_sessions')
+            .select('id')
+            .eq('conversation_id', conv)
+            .limit(1)
+
+          if (!sessionErr && sessionRows && sessionRows.length > 0) {
+            const sessionId = sessionRows[0].id
+            const { data: msgs, error: msgsErr } = await supabase
+              .from('chat_messages')
+              .select('id, role, content, thinking_content, metadata, created_at, message_type')
+              .eq('session_id', sessionId)
+              .order('created_at', { ascending: true })
+
+            if (!msgsErr && Array.isArray(msgs)) {
+              type DbMsg = { id: string; role: string; content: string; thinking_content?: string | null; metadata?: Record<string, unknown>; created_at?: string; message_type?: string }
+              // Filter out system messages (roadmap_trigger, quiz_trigger, etc.)
+              const loaded: Message[] = (msgs as DbMsg[])
+                .filter(m => m.role !== 'system')
+                .map(m => ({
+                  id: m.id,
+                  content: m.content || '',
+                  role: m.role === 'assistant' ? 'assistant' : 'user',
+                  timestamp: new Date(m.created_at || Date.now()),
+                  type: m.role === 'assistant' ? 'final_answer' : undefined,
+                  thinking_content: m.thinking_content || undefined
+                }))
+              setConversationId(conv)
+              setMessages(prev => [prev[0], ...loaded])
+              return
+            }
           }
-          
-          const loadedMessages: Message[] = Array.isArray(historyMessages)
-            ? (historyMessages as HistoryItem[]).map((msg) => {
-                const role = msg.role === 'assistant' ? 'assistant' : 'user'
-                return {
+        }
+
+        // Legacy fallback to old chat_history table if exists (in case migration not yet applied)
+        try {
+          if (conv) {
+            const supabase = createSupabaseBrowserClient()
+            const { data: legacyData, error: legacyErr } = await supabase
+              .from('chat_history')
+              .select('*')
+              .eq('conversation_id', conv)
+              .order('created_at', { ascending: true })
+            if (!legacyErr && Array.isArray(legacyData) && legacyData.length) {
+              type LegacyRow = { id?: string; message?: string; content?: string; role?: string; created_at?: string; thinking_content?: string }
+              // Filter out system messages (roadmap_trigger, quiz_trigger, etc.)
+              const loadedLegacy: Message[] = (legacyData as LegacyRow[])
+                .filter(r => r.role !== 'system')
+                .map(r => ({
+                  id: r.id || `${r.created_at}`,
+                  content: r.message || r.content || '',
+                  role: r.role === 'assistant' ? 'assistant' : 'user',
+                  timestamp: new Date(r.created_at || Date.now()),
+                  type: r.role === 'assistant' ? 'final_answer' : undefined,
+                  thinking_content: r.thinking_content || undefined
+                }))
+              setConversationId(conv)
+              setMessages(prev => [prev[0], ...loadedLegacy])
+              return
+            }
+          }
+        } catch {
+          // Ignore if legacy table missing
+        }
+
+        // Fallback: sessionStorage
+        if (typeof window !== 'undefined') {
+          const continueData = sessionStorage.getItem('continueChat')
+          if (continueData) {
+            type HistoryItem = { id?: string; message?: string; content?: string; role?: string; created_at?: string; thinking_content?: string }
+            const parsed = JSON.parse(continueData) as { conversationId?: string; messages?: HistoryItem[] }
+            const { conversationId: convId, messages: historyMessages } = parsed
+            setConversationId(convId ?? null)
+            const loadedMessages: Message[] = Array.isArray(historyMessages)
+              ? historyMessages.map((msg: HistoryItem) => ({
                   id: msg.id || Date.now().toString(),
                   content: msg.message || msg.content || '',
-                  role,
+                  role: msg.role === 'assistant' ? 'assistant' : 'user',
                   timestamp: new Date(msg.created_at || Date.now()),
-                  type: role === 'assistant' ? 'final_answer' : undefined
-                }
-              })
-            : []
-          
-          setMessages([messages[0], ...loadedMessages]) // Keep welcome message
-          
-          // Clear the session storage
-          sessionStorage.removeItem('continueChat')
-        } catch (error) {
-          console.error('Failed to load continued conversation:', error)
+                  type: (msg.role === 'assistant') ? 'final_answer' : undefined,
+                  thinking_content: msg.thinking_content || undefined
+                }))
+              : []
+            setMessages(prev => [prev[0], ...loadedMessages])
+            sessionStorage.removeItem('continueChat')
+          }
         }
+      } catch (error) {
+        console.error('Failed to load conversation history:', error)
       }
     }
-  }, [])
+    loadHistory()
+  }, [searchParams, conversationId])
 
   const toggleThinking = (messageId: string) => {
     setOpenThinking(prev => ({
@@ -173,7 +241,7 @@ export default function ChatPage() {
     })
   }, [messages, currentThinkingMessage])
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     if (!input.trim() || isLoading) return
 
     const userMessage: Message = {
@@ -205,7 +273,11 @@ export default function ChatPage() {
         body: JSON.stringify({
           message: userMessage.content,
           history: messages.map(m => ({ role: m.role, content: m.content })),
-          conversation_id: conversationId  // Pass conversation_id for linking
+          conversation_id: conversationId,  // Pass conversation_id for linking
+          metadata: {
+            roadmap_id: milestoneRoadmapId || undefined,
+            topic_id: undefined
+          }
         }),
       })
 
@@ -227,6 +299,15 @@ export default function ChatPage() {
           if (!jsonStr) continue
           try {
             const evt = JSON.parse(jsonStr)
+            
+            // Capture session_id and conversation_id from any event
+            if (evt.session_id && !sessionId) {
+              setSessionId(evt.session_id)
+            }
+            if (evt.conversation_id && !conversationId) {
+              setConversationId(evt.conversation_id)
+            }
+            
             switch (evt.type) {
               case 'thinking_start': {
                 break
@@ -347,7 +428,26 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [input, isLoading, messages, conversationId, milestoneRoadmapId, sessionId])
+
+  // Auto-start teaching prompt from roadmap navigation (placed after sendMessage definition)
+  useEffect(() => {
+    const autoQuery = searchParams.get('auto_query') || searchParams.get('contextual_prompt')
+    const autoStart = searchParams.get('auto_start')
+    
+    if (autoQuery && autoStart === 'true' && !autoStartedRef.current && !isLoading) {
+      autoStartedRef.current = true
+      setInput(autoQuery)
+      // Auto-send after a short delay
+      setTimeout(() => {
+        sendMessage()
+      }, 500)
+    } else if (autoQuery && !autoStartedRef.current) {
+      // Just pre-fill the input without auto-sending
+      setInput(autoQuery)
+      autoStartedRef.current = true
+    }
+  }, [searchParams, isLoading, sendMessage])
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -362,7 +462,7 @@ export default function ChatPage() {
     try {
       const request: CreateRoadmapRequest = {
         user_goal: pendingRoadmapTrigger.query,
-        domain: pendingRoadmapTrigger.domain as 'programming' | 'math' | 'general',
+        domain: (pendingRoadmapTrigger.domain === 'mathematics' ? 'math' : pendingRoadmapTrigger.domain) as 'programming' | 'math' | 'general',
         conversation_history: messages.map(m => ({
           role: m.role,
           content: m.content
@@ -436,6 +536,42 @@ You can continue our conversation here, and return to the roadmap anytime to tra
     setPendingQuizOffer(null)
   }
 
+  const handleStartMilestone = async () => {
+    if (!milestoneRoadmapId || !milestonePhaseId || !milestoneId) return
+    try {
+      await startMilestone(milestonePhaseId, milestoneId)
+      await refetchRoadmap()
+    } catch (e) {
+      console.error('Failed to start milestone:', e)
+    }
+  }
+
+  const handleCompleteMilestone = async () => {
+    if (!milestoneRoadmapId || !milestonePhaseId || !milestoneId) return
+    setIsCompleting(true)
+    try {
+      const note = `Completed via chat on ${new Date().toISOString()}`
+      const result = await completeMilestone(milestonePhaseId, milestoneId, note)
+      if (result.success) {
+        // Append a system-style assistant confirmation message
+        const confirmMsg: Message = {
+          id: Date.now().toString(),
+          content: `✅ Marked milestone as completed${milestoneTitle ? `: **${milestoneTitle}**` : ''}. Progress synced to your roadmap.`,
+          role: 'assistant',
+          timestamp: new Date(),
+          type: 'final_answer'
+        }
+        setMessages(prev => [...prev, confirmMsg])
+        setShowMilestoneBanner(false)
+        await refetchRoadmap()
+      }
+    } catch (e) {
+      console.error('Failed to complete milestone:', e)
+    } finally {
+      setIsCompleting(false)
+    }
+  }
+
   const CodeBlock = ({ language, children }: {
     language: string;
     children: React.ReactNode;
@@ -485,63 +621,34 @@ You can continue our conversation here, and return to the roadmap anytime to tra
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4 border-b bg-background shrink-0">
-        <div className="flex items-center gap-2">
-          <Avatar className="h-7 w-7 sm:h-8 sm:w-8">
-            <AvatarFallback className="bg-primary text-primary-foreground">
-              <Bot className="h-3 w-3 sm:h-4 sm:w-4" />
-            </AvatarFallback>
-          </Avatar>
-          <div>
-            <h2 className="font-semibold text-sm sm:text-base">AI Tutor</h2>
-            <p className="text-xs text-muted-foreground">Programming & Math Assistant</p>
-          </div>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => router.push('/dashboard/chat/history')}
-            className="gap-2"
-          >
-            <History className="h-4 w-4" />
-            <span className="hidden sm:inline">History</span>
-          </Button>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Sparkles className="h-3 w-3" />
-            <span className="hidden sm:inline">Autonomous Learning</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4 pb-2">
-        <div className="space-y-4 min-h-full flex flex-col">
-          <div className="flex-1" />
+    <div className="fixed inset-0 left-[var(--sidebar-width)] top-16 flex flex-col bg-background">
+      {/* Messages Area - Scrollable */}
+      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4">
+        <div className="max-w-4xl mx-auto space-y-6">
           {messages.map((message) => (
           <div
             key={message.id}
-            className={`flex gap-2 sm:gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 ${
+              message.role === 'user' ? 'justify-end' : 'justify-start'
+            }`}
           >
             {message.role === 'assistant' && (
-              <Avatar className="h-7 w-7 sm:h-8 sm:w-8 mt-1 shrink-0">
-                <AvatarFallback className="bg-primary text-primary-foreground">
-                  <Bot className="h-3 w-3 sm:h-4 sm:w-4" />
+              <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/10">
+                <AvatarFallback className="bg-gradient-to-br from-primary to-primary/80 text-primary-foreground">
+                  <Bot className="h-4 w-4" />
                 </AvatarFallback>
               </Avatar>
             )}
             
             <div
-              className={`rounded-lg p-2 sm:p-3 ${
+              className={`rounded-2xl px-4 py-3 shadow-sm ${
                 message.role === 'user'
-                  ? 'bg-primary text-primary-foreground ml-auto max-w-[85%] sm:max-w-[75%]'
-                  : 'bg-muted max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]'
+                  ? 'bg-primary text-primary-foreground max-w-[85%] sm:max-w-[70%]'
+                  : 'bg-card border max-w-[95%] sm:max-w-[85%] lg:max-w-[80%]'
               }`}
             >
               {message.role === 'assistant' ? (
-                <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none break-words">
+                <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none wrap-break-word">
                   {message.thinking_content && (
                     <Collapsible open={openThinking[message.id] || false} onOpenChange={() => toggleThinking(message.id)}>
                       <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground mb-2 w-full text-left">
@@ -627,41 +734,40 @@ You can continue our conversation here, and return to the roadmap anytime to tra
                   </ReactMarkdown>
                 </div>
               ) : (
-                <p className="text-sm">{message.content}</p>
+                <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
               )}
-              <div className="flex justify-between items-center mt-2">
-                <span className="text-xs opacity-70">
-                  <TimeDisplay timestamp={message.timestamp} />
-                </span>
+              
+              <div className="flex items-center gap-2 mt-2 text-xs opacity-70">
+                <TimeDisplay timestamp={message.timestamp} />
               </div>
             </div>
 
             {message.role === 'user' && (
-              <Avatar className="h-7 w-7 sm:h-8 sm:w-8 mt-1 shrink-0">
-                <AvatarFallback className="bg-muted">
-                  <User className="h-3 w-3 sm:h-4 sm:w-4" />
+              <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/20">
+                <AvatarFallback className="bg-muted text-foreground">
+                  <User className="h-4 w-4" />
                 </AvatarFallback>
               </Avatar>
             )}
           </div>
         ))}
 
-        {/* Current Thinking message */}
+        {/* Current Thinking Message */}
         {currentThinkingMessage && (
-          <div className="flex gap-2 sm:gap-3 justify-start">
-            <Avatar className="h-7 w-7 sm:h-8 sm:w-8 mt-1 shrink-0">
-              <AvatarFallback className="bg-primary text-primary-foreground">
-                <Bot className="h-3 w-3 sm:h-4 sm:w-4" />
+          <div className="flex gap-3 animate-in fade-in slide-in-from-bottom-2">
+            <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/10">
+              <AvatarFallback className="bg-gradient-to-br from-primary to-primary/80 text-primary-foreground">
+                <Bot className="h-4 w-4" />
               </AvatarFallback>
             </Avatar>
-            <div className="rounded-lg p-2 sm:p-3 bg-muted max-w-[95%] sm:max-w-[90%] lg:max-w-[85%]">
+            <div className="rounded-2xl px-4 py-3 bg-card border max-w-[95%] sm:max-w-[85%] lg:max-w-[80%] shadow-sm">
               <div className="flex items-center gap-2 mb-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm text-muted-foreground">AI is thinking & composing...</span>
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <span className="text-sm font-medium">Thinking...</span>
               </div>
               {currentThinkingMessage.thinking_content && (
-                <div className="text-xs border-l-2 border-blue-200 dark:border-blue-700 pl-3 mt-2 bg-blue-50/50 dark:bg-blue-950/30 rounded-r-md py-2 mb-2 overflow-x-auto">
-                  <div className="text-blue-600 dark:text-blue-400 font-medium mb-1">🧠 Reasoning:</div>
+                <div className="border-l-2 border-primary/30 pl-3 mb-3 bg-primary/5 rounded-r-lg py-2 text-sm">
+                  <div className="text-primary font-medium mb-1 text-xs">🧠 Reasoning:</div>
                   <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                     {currentThinkingMessage.thinking_content}
                   </ReactMarkdown>
@@ -684,7 +790,7 @@ You can continue our conversation here, and return to the roadmap anytime to tra
       {/* Roadmap Generation Prompt */}
       {pendingRoadmapTrigger && (
         <div className="p-3 sm:p-4 border-t bg-blue-50 dark:bg-blue-950/20">
-          <Card className="p-4 border-blue-200 dark:border-blue-800 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30">
+          <Card className="p-4 border-blue-200 dark:border-blue-800 bg-linear-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30">
             <div className="flex items-start gap-3">
               <div className="rounded-full bg-blue-100 dark:bg-blue-900 p-2">
                 <Map className="h-5 w-5 text-blue-600 dark:text-blue-400" />
@@ -721,7 +827,7 @@ You can continue our conversation here, and return to the roadmap anytime to tra
       {/* Quiz Offer Prompt */}
       {pendingQuizOffer && (
         <div className="p-3 sm:p-4 border-t bg-green-50 dark:bg-green-950/20">
-          <Card className="p-4 border-green-200 dark:border-green-800 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30">
+          <Card className="p-4 border-green-200 dark:border-green-800 bg-linear-to-r from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30">
             <div className="flex items-start gap-3">
               <div className="rounded-full bg-green-100 dark:bg-green-900 p-2">
                 <FileQuestion className="h-5 w-5 text-green-600 dark:text-green-400" />
@@ -729,7 +835,7 @@ You can continue our conversation here, and return to the roadmap anytime to tra
               <div className="flex-1">
                 <h3 className="font-semibold text-sm mb-1">📝 Test Your Knowledge?</h3>
                 <p className="text-sm text-muted-foreground mb-3">
-                  Ready to practice what you've learned about <strong>{pendingQuizOffer.topic || 'this topic'}</strong>?
+                  Ready to practice what you&apos;ve learned about <strong>{pendingQuizOffer.topic || 'this topic'}</strong>?
                   I can generate a quiz to help reinforce your understanding.
                 </p>
                 <div className="flex gap-2">
@@ -755,34 +861,85 @@ You can continue our conversation here, and return to the roadmap anytime to tra
         </div>
       )}
 
-      {/* Input */}
-      <div className="p-3 sm:p-4 border-t bg-background shrink-0">
-        <div className="flex gap-2">
-          <Input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Ask me anything about programming or mathematics..."
-            disabled={isLoading}
-            className="flex-1 text-sm"
-          />
-          <Button 
-            onClick={sendMessage} 
-            disabled={!input.trim() || isLoading}
-            size="icon"
-            className="shrink-0"
-          >
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+      {/* Milestone Context Banner */}
+      {showMilestoneBanner && milestoneRoadmapId && milestonePhaseId && milestoneId && (
+        <div className="p-3 sm:p-4 border-t bg-amber-50 dark:bg-amber-950/20">
+          <Card className="p-4 border-amber-200 dark:border-amber-800 bg-linear-to-r from-amber-50 to-yellow-50 dark:from-amber-950/30 dark:to-yellow-950/30">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-amber-100 dark:bg-amber-900 p-2">
+                <Map className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-sm mb-1">Learning Milestone In Progress</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  You&apos;re working on a roadmap milestone{milestoneTitle ? `: ` : ''}
+                  {milestoneTitle ? <strong>{milestoneTitle}</strong> : <span> — keep going!</span>}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleStartMilestone}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Set In Progress
+                  </Button>
+                  <Button
+                    onClick={handleCompleteMilestone}
+                    size="sm"
+                    className="bg-amber-600 hover:bg-amber-700"
+                    disabled={isCompleting}
+                  >
+                    {isCompleting ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 mr-1" />
+                    )}
+                    Mark Complete
+                  </Button>
+                  <Button
+                    onClick={() => setShowMilestoneBanner(false)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
         </div>
-        <p className="text-xs text-muted-foreground mt-2 text-center hidden sm:block">
-          AI can make mistakes. Verify important information and use for educational purposes.
-        </p>
+      )}
+
+      {/* Fixed Input Area */}
+      <div className="shrink-0 border-t bg-background">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3">
+          <div className="flex gap-3">
+            <Input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="Ask me anything about programming or mathematics..."
+              disabled={isLoading}
+              className="flex-1 h-11 text-sm rounded-xl border-2 focus-visible:ring-2 focus-visible:ring-primary/20"
+            />
+            <Button 
+              onClick={sendMessage} 
+              disabled={!input.trim() || isLoading}
+              size="icon"
+              className="h-11 w-11 rounded-xl shrink-0"
+            >
+              {isLoading ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2 text-center">
+            AI can make mistakes. Verify important information.
+          </p>
+        </div>
       </div>
     </div>
   )

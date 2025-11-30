@@ -71,15 +71,19 @@ class RoadmapResponse(BaseModel):
 @router.post("/generate", response_model=Dict[str, Any])
 async def generate_roadmap(
     request: GenerateRoadmapRequest,
-    user=Depends(get_current_user),
-    _limit=Depends(limit_user)
+    user=Depends(get_current_user)
 ):
     """
     Generate a new personalized learning roadmap based on user goals
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("user_id")
         logger.info(f"Generating roadmap for user {user_id}")
+
+        # Apply rate limiting using authenticated user's id (avoid query param dependency)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+        limit_user(user_id)
 
         # Generate roadmap using AI
         roadmap_data = await roadmap_generator.generate_roadmap(
@@ -97,10 +101,22 @@ async def generate_roadmap(
         if not conversation_id and request.user_context:
             conversation_id = request.user_context.get("conversation_id")
 
-        # Get chat_session_id
+        # Get chat_session_id; validate against chat_sessions to avoid FK errors
         chat_session_id = request.chat_session_id
         if not chat_session_id and request.user_context:
             chat_session_id = request.user_context.get("chat_session_id")
+
+        # Verify chat_session_id exists; if not, drop it to satisfy FK
+        if chat_session_id:
+            try:
+                chat_check = supabase.table("chat_sessions").select("id").eq("id", chat_session_id).single().execute()
+                if not chat_check.data:
+                    logger.warning(f"chat_session_id '{chat_session_id}' not found; omitting to satisfy FK")
+                    chat_session_id = None
+            except Exception:
+                # If validation query fails, be safe and omit chat_session_id
+                logger.warning("Failed to validate chat_session_id; omitting to avoid FK violation")
+                chat_session_id = None
 
         roadmap_record = {
             "user_id": user_id,
@@ -155,7 +171,7 @@ async def get_user_roadmaps(
     Get all roadmaps for the current user with optional filters
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -197,7 +213,7 @@ async def get_roadmap(
     Get a specific roadmap with progress details
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -252,7 +268,7 @@ async def update_milestone_progress(
     Update progress on a specific milestone
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -297,6 +313,20 @@ async def update_milestone_progress(
         if quiz_trigger:
             response["quiz_trigger"] = quiz_trigger
 
+        # Emit a chat progress event if this roadmap is linked to a chat session
+        try:
+            await _emit_progress_chat_event(
+                user_id=user_id,
+                roadmap_id=roadmap_id,
+                phase_id=phase_id,
+                milestone_id=milestone_id,
+                status=request.status,
+                progress_percentage=response["milestone_progress"].get("progress_percentage", request.progress_percentage),
+                notes=request.notes,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit chat progress event: {e}")
+
         return response
 
     except HTTPException:
@@ -304,6 +334,165 @@ async def update_milestone_progress(
     except Exception as e:
         logger.error(f"Error updating milestone: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error updating milestone: {str(e)}")
+
+
+@router.post("/{roadmap_id}/milestone/{phase_id}/{milestone_id}/start-learning", response_model=Dict[str, Any])
+async def start_learning_milestone(
+    roadmap_id: str,
+    phase_id: str,
+    milestone_id: str,
+    user=Depends(get_current_user)
+):
+    """
+    Start learning a specific milestone - creates contextual chat prompt and links to session
+    
+    This endpoint:
+    1. Gets the roadmap and milestone details
+    2. Generates a human-like contextual prompt for the milestone
+    3. Creates or retrieves linked chat session
+    4. Updates milestone status to 'in_progress'
+    5. Returns chat navigation info
+    """
+    try:
+        user_id = user.get("user_id") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        supabase = get_supabase_client()
+
+        # Get roadmap details
+        roadmap_result = supabase.table("learning_roadmaps")\
+            .select("*")\
+            .eq("id", roadmap_id)\
+            .eq("user_id", user_id)\
+            .execute()
+
+        if not roadmap_result.data:
+            raise HTTPException(status_code=404, detail="Roadmap not found")
+
+        roadmap = roadmap_result.data[0]
+        roadmap_data = roadmap["roadmap_data"]
+
+        # Find the specific milestone
+        milestone_info = None
+        phase_info = None
+        
+        for phase in roadmap_data.get("learning_phases", []):
+            if phase.get("phase_id") == phase_id:
+                phase_info = phase
+                for milestone in phase.get("milestones", []):
+                    if milestone.get("milestone_id") == milestone_id:
+                        milestone_info = milestone
+                        break
+                break
+
+        if not milestone_info:
+            raise HTTPException(status_code=404, detail="Milestone not found in roadmap")
+
+        # Generate contextual chat prompt
+        milestone_title = milestone_info.get("title", "")
+        milestone_desc = milestone_info.get("description", "")
+        phase_name = phase_info.get("phase_name", "") if phase_info else ""
+        roadmap_title = roadmap.get("title", "")
+        
+        # Create human-like prompt based on milestone type
+        milestone_type = milestone_info.get("type", "lesson")
+        
+        if milestone_type == "quiz":
+            contextual_prompt = (
+                f"I'm working on the '{roadmap_title}' learning path. "
+                f"I've reached the quiz: '{milestone_title}' in the {phase_name} phase. "
+                f"Can you help me prepare for this quiz? {milestone_desc}"
+            )
+        else:
+            contextual_prompt = (
+                f"I'm learning '{roadmap_title}' and I want to start the topic: '{milestone_title}' "
+                f"from the {phase_name} phase. {milestone_desc} Can you teach me about this?"
+            )
+
+        # Get or create chat session linked to this roadmap
+        session_result = supabase.table("chat_sessions")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("roadmap_id", roadmap_id)\
+            .is_("ended_at", "null")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+
+        if session_result.data:
+            session = session_result.data[0]
+            session_id = session["id"]
+            conversation_id = session["conversation_id"]
+            logger.info(f"Using existing session {session_id} for roadmap {roadmap_id}")
+        else:
+            # Create new session
+            new_session = supabase.table("chat_sessions").insert({
+                "user_id": user_id,
+                "roadmap_id": roadmap_id,
+                "conversation_id": str(uuid.uuid4()),
+                "title": f"Learning: {roadmap_title}",
+                "metadata": {
+                    "roadmap_title": roadmap_title,
+                    "started_from_milestone": milestone_id
+                }
+            }).execute()
+
+            if not new_session.data:
+                raise HTTPException(status_code=500, detail="Failed to create chat session")
+            
+            session = new_session.data[0]
+            session_id = session["id"]
+            conversation_id = session["conversation_id"]
+            logger.info(f"Created new session {session_id} for roadmap {roadmap_id}")
+
+        # Update milestone status to in_progress
+        try:
+            supabase.table("milestone_progress").upsert({
+                "user_id": user_id,
+                "roadmap_id": roadmap_id,
+                "phase_id": phase_id,
+                "milestone_id": milestone_id,
+                "milestone_title": milestone_title,
+                "milestone_type": milestone_type,
+                "status": "in_progress",
+                "started_at": datetime.now().isoformat(),
+                "progress_percentage": 0.0
+            }, on_conflict="user_id,roadmap_id,phase_id,milestone_id").execute()
+            
+            # Update roadmap's current milestone
+            supabase.table("learning_roadmaps").update({
+                "current_phase_id": phase_id,
+                "current_milestone_id": milestone_id
+            }).eq("id", roadmap_id).execute()
+            
+        except Exception as e:
+            logger.warning(f"Failed to update milestone status: {e}")
+
+        return {
+            "status": "success",
+            "message": "Ready to start learning!",
+            "navigation": {
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+                "contextual_prompt": contextual_prompt,
+                "chat_url": f"/dashboard/chat?conversation_id={conversation_id}&auto_start=true"
+            },
+            "milestone": {
+                "roadmap_id": roadmap_id,
+                "phase_id": phase_id,
+                "milestone_id": milestone_id,
+                "title": milestone_title,
+                "type": milestone_type,
+                "description": milestone_desc
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting learning milestone: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error starting milestone: {str(e)}")
 
 
 @router.post("/{roadmap_id}/adapt", response_model=Dict[str, Any])
@@ -316,7 +505,7 @@ async def adapt_roadmap(
     Adapt roadmap based on user performance (AI-powered)
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -380,7 +569,7 @@ async def delete_roadmap(
     Delete a roadmap (soft delete by setting status to 'abandoned')
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -585,3 +774,73 @@ def _enrich_roadmap_with_progress(roadmap: Dict, milestone_progress: Dict) -> Di
                 milestone["completed_at"] = progress.get("completed_at")
 
     return enriched
+
+
+async def _emit_progress_chat_event(
+    user_id: str,
+    roadmap_id: str,
+    phase_id: str,
+    milestone_id: str,
+    status: str,
+    progress_percentage: float,
+    notes: Optional[str] = None,
+):
+    """Append a system-style chat message reflecting milestone progress if roadmap links to a chat session.
+
+    Tries `learning_roadmaps.chat_session_id` first, then falls back to `conversation_id` → session lookup.
+    """
+    supabase = get_supabase_client()
+    if not supabase:
+        return
+
+    # Load roadmap linkage metadata
+    roadmap_res = supabase.table("learning_roadmaps").select("id, title, conversation_id, chat_session_id").eq("id", roadmap_id).single().execute()
+    if not roadmap_res.data:
+        return
+
+    roadmap = roadmap_res.data
+    session_id = roadmap.get("chat_session_id")
+
+    # If session_id missing, try to find by conversation_id
+    if not session_id and roadmap.get("conversation_id"):
+        try:
+            sess_q = supabase.table("chat_sessions").select("id").eq("conversation_id", roadmap["conversation_id"]).eq("user_id", user_id).limit(1).execute()
+            if sess_q.data:
+                session_id = sess_q.data[0]["id"]
+        except Exception:
+            pass
+
+    if not session_id:
+        # No chat link available; skip
+        return
+
+    # Compose a concise assistant message
+    status_text = {
+        "not_started": "set to not started",
+        "in_progress": "marked in progress",
+        "completed": "marked completed",
+    }.get(status, f"updated (status: {status})")
+
+    content = (
+        f"Progress update: Milestone `{milestone_id}` {status_text}. "
+        f"Roadmap `{roadmap['title']}` progress: {round(progress_percentage or 0, 1)}%."
+    )
+
+    metadata = {
+        "event": "milestone_update",
+        "roadmap_id": roadmap_id,
+        "phase_id": phase_id,
+        "milestone_id": milestone_id,
+        "status": status,
+        "progress_percentage": progress_percentage,
+        "notes": notes,
+    }
+
+    # Insert chat message as assistant final answer with metadata
+    supabase.table("chat_messages").insert({
+        "session_id": session_id,
+        "role": "assistant",
+        "content": content,
+        "message_type": "final_answer",
+        "metadata": metadata,
+    }).execute()

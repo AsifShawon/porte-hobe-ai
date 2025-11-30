@@ -15,14 +15,17 @@ import {
   Clock,
   Play,
   Check,
+  Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { useStartLearning } from '@/hooks/useStartLearning';
 
 interface MilestoneItemProps {
   milestone: Milestone;
   phaseId: string;
+  roadmapId?: string;
   milestoneNumber: number;
   onClick?: () => void;
   onComplete?: () => void;
@@ -31,6 +34,7 @@ interface MilestoneItemProps {
 export function MilestoneItem({
   milestone,
   phaseId,
+  roadmapId,
   milestoneNumber,
   onClick,
   onComplete,
@@ -42,6 +46,23 @@ export function MilestoneItem({
 
   const isLesson = milestone.type === 'lesson';
   const isQuiz = milestone.type === 'quiz';
+
+  const { startLearning, isStarting } = useStartLearning();
+
+  const handleStartLearning = async () => {
+    if (!roadmapId) {
+      console.error('Roadmap ID is required to start learning');
+      return;
+    }
+
+    await startLearning({
+      roadmapId,
+      phaseId,
+      milestoneId: milestone.id,
+    });
+  };
+
+  const handleButtonClick = isNotStarted || isInProgress ? handleStartLearning : onClick;
 
   return (
     <div
@@ -142,9 +163,23 @@ export function MilestoneItem({
               </Button>
             ) : isInProgress ? (
               <>
-                <Button variant="outline" size="sm" onClick={onClick}>
-                  <Play className="h-4 w-4 mr-1" />
-                  Continue
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleButtonClick}
+                  disabled={isStarting}
+                >
+                  {isStarting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 mr-1" />
+                      Continue
+                    </>
+                  )}
                 </Button>
                 <Button variant="default" size="sm" onClick={onComplete}>
                   <Check className="h-4 w-4 mr-1" />
@@ -152,9 +187,23 @@ export function MilestoneItem({
                 </Button>
               </>
             ) : (
-              <Button variant="outline" size="sm" onClick={onClick}>
-                <Play className="h-4 w-4 mr-1" />
-                Start
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={handleButtonClick}
+                disabled={isStarting}
+              >
+                {isStarting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    Starting...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-1" />
+                    Start
+                  </>
+                )}
               </Button>
             )}
           </div>
