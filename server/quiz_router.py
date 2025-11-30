@@ -115,6 +115,8 @@ async def generate_quiz(
             "quiz": created_quiz
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating quiz: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error generating quiz: {str(e)}")
@@ -132,7 +134,10 @@ async def get_user_quizzes(
     Get all quizzes for the current user (quiz library)
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Build query
@@ -179,6 +184,8 @@ async def get_user_quizzes(
             "count": len(result.data)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching quizzes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching quizzes: {str(e)}")
@@ -193,7 +200,10 @@ async def get_quiz(
     Get a specific quiz (without showing correct answers)
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get quiz
@@ -228,6 +238,8 @@ async def get_quiz(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching quiz: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching quiz: {str(e)}")
@@ -246,7 +258,10 @@ async def start_quiz_attempt(
     Start a new quiz attempt
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get quiz
@@ -306,6 +321,8 @@ async def start_quiz_attempt(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error starting quiz attempt: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error starting quiz attempt: {str(e)}")
@@ -321,7 +338,10 @@ async def submit_quiz_answer(
     Submit an answer for grading and update attempt
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get attempt
@@ -398,6 +418,8 @@ async def submit_quiz_answer(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error submitting answer: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error submitting answer: {str(e)}")
@@ -412,7 +434,10 @@ async def complete_quiz_attempt(
     Complete a quiz attempt and generate final results
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get attempt
@@ -509,6 +534,8 @@ async def complete_quiz_attempt(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error completing quiz: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error completing quiz: {str(e)}")
@@ -523,7 +550,10 @@ async def get_attempt_details(
     Get detailed results of a quiz attempt
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get attempt
@@ -551,6 +581,8 @@ async def get_attempt_details(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching attempt: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching attempt: {str(e)}")
@@ -566,7 +598,10 @@ async def get_quiz_statistics(user=Depends(get_current_user)):
     Get overall quiz statistics for the user
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Call the database function
@@ -582,6 +617,8 @@ async def get_quiz_statistics(user=Depends(get_current_user)):
 
         return {"stats": stats}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching quiz stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching quiz stats: {str(e)}")
@@ -625,5 +662,7 @@ async def _update_milestone_with_quiz_result(
 
         logger.info(f"Milestone {milestone_id} updated with quiz result: passed={passed}")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating milestone: {e}")

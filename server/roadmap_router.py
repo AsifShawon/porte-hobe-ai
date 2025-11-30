@@ -127,6 +127,8 @@ async def generate_roadmap(
             "roadmap": created_roadmap
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating roadmap: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error generating roadmap: {str(e)}")
@@ -143,7 +145,10 @@ async def get_user_roadmaps(
     Get all roadmaps for the current user with optional filters
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Build query
@@ -164,6 +169,10 @@ async def get_user_roadmaps(
             "count": len(result.data)
         }
 
+    except HTTPException:
+        raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching roadmaps: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching roadmaps: {str(e)}")
@@ -178,7 +187,10 @@ async def get_roadmap(
     Get a specific roadmap with progress details
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get roadmap
@@ -211,6 +223,8 @@ async def get_roadmap(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching roadmap: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching roadmap: {str(e)}")
@@ -228,7 +242,10 @@ async def update_milestone_progress(
     Update progress on a specific milestone
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Update or create milestone progress
@@ -262,6 +279,8 @@ async def update_milestone_progress(
             "milestone_progress": result.data[0] if result.data else update_data
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating milestone: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error updating milestone: {str(e)}")
@@ -277,7 +296,10 @@ async def adapt_roadmap(
     Adapt roadmap based on user performance (AI-powered)
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         # Get current roadmap
@@ -322,6 +344,8 @@ async def adapt_roadmap(
 
     except HTTPException:
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error adapting roadmap: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error adapting roadmap: {str(e)}")
@@ -336,7 +360,10 @@ async def delete_roadmap(
     Delete a roadmap (soft delete by setting status to 'abandoned')
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("sub") if user else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
         supabase = get_supabase_client()
 
         result = supabase.table("learning_roadmaps")\
@@ -350,6 +377,8 @@ async def delete_roadmap(
 
         return {"status": "success", "message": "Roadmap deleted"}
 
+    except HTTPException:
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -385,6 +414,8 @@ async def _initialize_milestone_progress(user_id: str, roadmap_id: str, roadmap_
 
         logger.info(f"Initialized {len(progress_records)} milestone progress records")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error initializing milestone progress: {e}")
         # Non-fatal, continue
@@ -424,6 +455,8 @@ async def _recalculate_roadmap_progress(roadmap_id: str):
 
         logger.info(f"Roadmap progress updated: {completed_milestones}/{total_milestones} ({progress_percentage:.1f}%)")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error recalculating progress: {e}")
 
