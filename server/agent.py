@@ -250,11 +250,11 @@ class TutorAgent:
             if "think" in event:
                 print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
 
-    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield structured streaming events for frontend consumption.
         Event types:
           intent_detected, thinking_start, thinking_delta, thinking_complete,
-          answer_start, answer_delta, answer_complete
+          answer_start, answer_delta, answer_complete, roadmap_trigger
         """
         # Build history text and conversation list for intent classification
         history_lines = []
@@ -298,7 +298,9 @@ class TutorAgent:
                             "topic": intent_result.topic,
                             "domain": str(intent_result.domain),
                             "user_level": intent_result.user_level or "beginner",
-                            "query": query
+                            "query": query,
+                            "conversation_id": conversation_id,  # Link roadmap to this conversation
+                            "user_id": user_id
                         }
                         logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
 

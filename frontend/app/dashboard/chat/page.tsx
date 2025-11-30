@@ -37,6 +37,8 @@ interface RoadmapTrigger {
   domain: string
   user_level: string
   query: string
+  conversation_id?: string
+  user_id?: string
 }
 
 interface QuizOffer {
@@ -187,7 +189,8 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMessage.content,
-          history: messages.map(m => ({ role: m.role, content: m.content }))
+          history: messages.map(m => ({ role: m.role, content: m.content })),
+          conversation_id: conversationId  // Pass conversation_id for linking
         }),
       })
 
@@ -284,8 +287,14 @@ export default function ChatPage() {
                   topic: evt.topic,
                   domain: evt.domain,
                   user_level: evt.user_level,
-                  query: evt.query
+                  query: evt.query,
+                  conversation_id: evt.conversation_id,
+                  user_id: evt.user_id
                 })
+                // Update conversation_id state if provided
+                if (evt.conversation_id && !conversationId) {
+                  setConversationId(evt.conversation_id)
+                }
                 break
               }
               case 'quiz_offer': {
@@ -346,16 +355,22 @@ export default function ChatPage() {
         user_context: {
           user_level: pendingRoadmapTrigger.user_level,
           focus_areas: pendingRoadmapTrigger.topic ? [pendingRoadmapTrigger.topic] : []
-        }
+        },
+        conversation_id: pendingRoadmapTrigger.conversation_id || conversationId || undefined,
+        chat_session_id: conversationId || undefined
       }
 
       const roadmap = await createRoadmap(request)
 
       if (roadmap) {
-        // Add success message
+        // Add success message with "View Roadmap" button
         const successMsg: Message = {
           id: Date.now().toString(),
-          content: `✅ I've created a personalized learning roadmap for "${roadmap.title}"! You can view it in your [Progress page](/dashboard/progress).`,
+          content: `✅ I've created a personalized learning roadmap for **"${roadmap.title}"**!
+
+[📚 View Roadmap](/dashboard/progress?roadmap=${roadmap.id})
+
+You can continue our conversation here, and return to the roadmap anytime to track your progress.`,
           role: 'assistant',
           timestamp: new Date(),
           type: 'final_answer'

@@ -31,6 +31,8 @@ class GenerateRoadmapRequest(BaseModel):
     domain: str = Field(default="general", description="Learning domain (programming, math, general)")
     conversation_history: Optional[List[Dict[str, Any]]] = Field(default=None, description="Recent conversation")
     user_context: Optional[Dict[str, Any]] = Field(default=None, description="User context (level, preferences)")
+    conversation_id: Optional[str] = Field(default=None, description="Conversation ID to link roadmap to chat")
+    chat_session_id: Optional[str] = Field(default=None, description="Chat session ID for navigation")
 
 
 class UpdateMilestoneRequest(BaseModel):
@@ -90,8 +92,15 @@ async def generate_roadmap(
         # Store in database
         supabase = get_supabase_client()
 
-        # Get conversation_id if available from context
-        conversation_id = request.user_context.get("conversation_id")
+        # Get conversation_id from request (directly passed or from user_context)
+        conversation_id = request.conversation_id
+        if not conversation_id and request.user_context:
+            conversation_id = request.user_context.get("conversation_id")
+
+        # Get chat_session_id
+        chat_session_id = request.chat_session_id
+        if not chat_session_id and request.user_context:
+            chat_session_id = request.user_context.get("chat_session_id")
 
         roadmap_record = {
             "user_id": user_id,
@@ -106,6 +115,7 @@ async def generate_roadmap(
             "current_milestone_id": roadmap_data["phases"][0]["milestones"][0]["id"] if roadmap_data.get("phases") and roadmap_data["phases"][0].get("milestones") else None,
             "status": "active",
             "conversation_id": conversation_id,
+            "chat_session_id": chat_session_id,
             "metadata": {"user_goal": request.user_goal}
         }
 

@@ -101,6 +101,7 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[MessageItem]] = []
     request_id: Optional[str] = None  # Optional: frontend can provide its own ID
+    conversation_id: Optional[str] = None  # Conversation ID for tracking and linking to roadmaps
     topic_id: Optional[str] = None  # Topic context for progress tracking
     attachments: Optional[List[str]] = []  # Upload IDs to include as context
     enable_web_search: bool = False  # Enable web scraping
@@ -180,6 +181,8 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
 
     async def event_stream():
         request_id = request.request_id or str(uuid.uuid4())
+        # Generate or use provided conversation_id
+        conversation_id = request.conversation_id or str(uuid.uuid4())
         start_ts = asyncio.get_event_loop().time()
         try:
             langchain_history = convert_history_to_langchain(request.history)
@@ -188,16 +191,22 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
                 if supabase is not None:
                     supabase.table("chat_history").insert({
                         "user_id": user["user_id"],
-                        "conversation_id": None,
+                        "conversation_id": conversation_id,
                         "role": "user",
                         "message": request.message,
                     }).execute()
             except Exception:
                 logger.debug("chat_history insert (user) failed", exc_info=True)
-            # Stream phases (with user_id for intent classification)
-            async for evt in tutor_agent.stream_phases(request.message, langchain_history, user_id=user.get("user_id")):
+            # Stream phases (with user_id for intent classification and conversation_id for roadmap linking)
+            async for evt in tutor_agent.stream_phases(
+                request.message,
+                langchain_history,
+                user_id=user.get("user_id"),
+                conversation_id=conversation_id
+            ):
                 base = {
                     "request_id": request_id,
+                    "conversation_id": conversation_id,
                     "timestamp": str(asyncio.get_event_loop().time())
                 }
                 payload = {**base, **evt}

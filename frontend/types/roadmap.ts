@@ -71,6 +71,8 @@ export interface CreateRoadmapRequest {
   domain: RoadmapDomain;
   conversation_history?: Array<{role: string; content: string}>;
   user_context?: Record<string, any>;
+  conversation_id?: string;  // Link roadmap to chat conversation
+  chat_session_id?: string;  // Chat session for navigation
 }
 
 export interface CreateRoadmapResponse {
