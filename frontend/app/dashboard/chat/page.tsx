@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { useAuth } from '@/components/auth-provider'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -66,6 +66,7 @@ function TimeDisplay({ timestamp }: { timestamp: Date }) {
 export default function ChatPage() {
   const { user, loading } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     if (!loading && !user) {
@@ -87,6 +88,7 @@ export default function ChatPage() {
   const [currentThinkingMessage, setCurrentThinkingMessage] = useState<Message | null>(null)
   const [openThinking, setOpenThinking] = useState<{[key: string]: boolean}>({})
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [roadmapId, setRoadmapId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Roadmap and Quiz state
@@ -94,6 +96,19 @@ export default function ChatPage() {
   const [pendingQuizOffer, setPendingQuizOffer] = useState<QuizOffer | null>(null)
   const { createRoadmap } = useRoadmaps()
   const { generateQuiz } = useQuizzes()
+
+  // Check for roadmap/conversation linking from URL params
+  useEffect(() => {
+    const roadmap = searchParams.get('roadmap')
+    const conversation = searchParams.get('conversation_id')
+
+    if (roadmap) {
+      setRoadmapId(roadmap)
+    }
+    if (conversation && !conversationId) {
+      setConversationId(conversation)
+    }
+  }, [searchParams, conversationId])
 
   // Check for continued conversation from history
   useEffect(() => {

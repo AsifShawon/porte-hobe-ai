@@ -7,8 +7,10 @@
 
 import { LearningRoadmap } from '@/types/roadmap';
 import { PhaseCard } from './PhaseCard';
-import { CheckCircle2, Circle, Lock } from 'lucide-react';
+import { CheckCircle2, Circle, Lock, MessageSquare } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 
 interface RoadmapTimelineProps {
   roadmap: LearningRoadmap;
@@ -28,19 +30,30 @@ export function RoadmapTimeline({
       {/* Overall Progress Header */}
       <div className="bg-card rounded-lg border p-6">
         <div className="flex items-center justify-between mb-4">
-          <div>
+          <div className="flex-1">
             <h2 className="text-2xl font-bold">{roadmap.title}</h2>
             {roadmap.description && (
               <p className="text-muted-foreground mt-1">{roadmap.description}</p>
             )}
           </div>
-          <div className="text-right">
-            <div className="text-3xl font-bold text-primary">
-              {Math.round(progress_percentage)}%
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <div className="text-3xl font-bold text-primary">
+                {Math.round(progress_percentage)}%
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {completed_milestones} of {total_milestones} milestones
+              </p>
             </div>
-            <p className="text-sm text-muted-foreground">
-              {completed_milestones} of {total_milestones} milestones
-            </p>
+            {/* Continue Learning Button - links back to chat */}
+            {roadmap.conversation_id && (
+              <Link href={`/dashboard/chat?roadmap=${roadmap.id}&conversation_id=${roadmap.conversation_id}`}>
+                <Button variant="default" size="sm" className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  Continue Learning
+                </Button>
+              </Link>
+            )}
           </div>
         </div>
 
