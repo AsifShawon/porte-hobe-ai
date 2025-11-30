@@ -284,10 +284,20 @@ async def update_milestone_progress(
         # Recalculate overall roadmap progress
         await _recalculate_roadmap_progress(roadmap_id)
 
-        return {
+        # Check for quiz triggers if milestone was just completed
+        quiz_trigger = None
+        if request.status == "completed":
+            quiz_trigger = await _check_quiz_triggers(user_id, roadmap_id, phase_id, milestone_id)
+
+        response = {
             "status": "success",
             "milestone_progress": result.data[0] if result.data else update_data
         }
+
+        if quiz_trigger:
+            response["quiz_trigger"] = quiz_trigger
+
+        return response
 
     except HTTPException:
         raise
@@ -469,6 +479,94 @@ async def _recalculate_roadmap_progress(roadmap_id: str):
         raise
     except Exception as e:
         logger.error(f"Error recalculating progress: {e}")
+
+
+async def _check_quiz_triggers(user_id: str, roadmap_id: str, completed_phase_id: str, completed_milestone_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Check if completing this milestone should trigger a quiz offer.
+    Returns quiz trigger data if a quiz should be offered, None otherwise.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Get the roadmap to understand milestone structure
+        roadmap_result = supabase.table("learning_roadmaps")\
+            .select("*")\
+            .eq("id", roadmap_id)\
+            .single()\
+            .execute()
+
+        if not roadmap_result.data:
+            return None
+
+        roadmap = roadmap_result.data
+        roadmap_data = roadmap.get("roadmap_data", {})
+        phases = roadmap_data.get("phases", [])
+
+        # Find the phase and milestone that was just completed
+        completed_phase = None
+        completed_milestone = None
+        milestone_order = 0
+
+        for phase in phases:
+            if phase["id"] == completed_phase_id:
+                completed_phase = phase
+                for idx, milestone in enumerate(phase.get("milestones", [])):
+                    if milestone["id"] == completed_milestone_id:
+                        completed_milestone = milestone
+                        milestone_order = idx
+                        break
+                break
+
+        if not completed_phase or not completed_milestone:
+            return None
+
+        # Only trigger quiz if the completed milestone was a lesson
+        if completed_milestone.get("type") != "lesson":
+            return None
+
+        # Look for the next quiz milestone in the same phase
+        next_quiz = None
+        for idx, milestone in enumerate(completed_phase.get("milestones", [])):
+            if idx > milestone_order and milestone.get("type") == "quiz":
+                next_quiz = milestone
+                break
+
+        if not next_quiz:
+            return None
+
+        # Check if quiz milestone is already completed or in progress
+        progress_result = supabase.table("milestone_progress")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("roadmap_id", roadmap_id)\
+            .eq("milestone_id", next_quiz["id"])\
+            .execute()
+
+        if progress_result.data:
+            quiz_status = progress_result.data[0].get("status")
+            if quiz_status in ["completed", "in_progress"]:
+                return None  # Don't trigger if already started or completed
+
+        # Check if this quiz has prerequisites that aren't met
+        # For now, assume quiz is unlocked if previous lesson is completed
+        # You can add more sophisticated prerequisite checking here
+
+        # Return quiz trigger data
+        return {
+            "type": "milestone_quiz",
+            "phase_id": completed_phase_id,
+            "phase_title": completed_phase.get("title"),
+            "milestone_id": next_quiz["id"],
+            "milestone_title": next_quiz.get("title"),
+            "quiz_difficulty": next_quiz.get("difficulty", "beginner"),
+            "topics": next_quiz.get("topics", []),
+            "trigger_reason": f"Completed {completed_milestone.get('title')}"
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking quiz triggers: {e}", exc_info=True)
+        return None
 
 
 def _enrich_roadmap_with_progress(roadmap: Dict, milestone_progress: Dict) -> Dict:

@@ -61,14 +61,37 @@ class RoadmapApiClient extends ApiClient {
     phaseId: string,
     milestoneId: string,
     request: UpdateMilestoneRequest
-  ): Promise<{ status: string; milestone_progress: MilestoneProgress }> {
-    return this.request<{ status: string; milestone_progress: MilestoneProgress }>(
-      `/api/roadmaps/${roadmapId}/milestone/${phaseId}/${milestoneId}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(request),
-      }
-    );
+  ): Promise<{
+    status: string;
+    milestone_progress: MilestoneProgress;
+    quiz_trigger?: {
+      type: string;
+      phase_id: string;
+      phase_title: string;
+      milestone_id: string;
+      milestone_title: string;
+      quiz_difficulty: string;
+      topics: string[];
+      trigger_reason: string;
+    };
+  }> {
+    return this.request<{
+      status: string;
+      milestone_progress: MilestoneProgress;
+      quiz_trigger?: {
+        type: string;
+        phase_id: string;
+        phase_title: string;
+        milestone_id: string;
+        milestone_title: string;
+        quiz_difficulty: string;
+        topics: string[];
+        trigger_reason: string;
+      };
+    }>(`/api/roadmaps/${roadmapId}/milestone/${phaseId}/${milestoneId}`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
   }
 
   /**

@@ -135,8 +135,8 @@ export function useRoadmap(roadmapId: string | null) {
     phaseId: string,
     milestoneId: string,
     request: UpdateMilestoneRequest
-  ): Promise<boolean> => {
-    if (!roadmapId) return false;
+  ): Promise<{ success: boolean; quiz_trigger?: any }> => {
+    if (!roadmapId) return { success: false };
 
     try {
       setError(null);
@@ -154,29 +154,33 @@ export function useRoadmap(roadmapId: string | null) {
       // Refresh roadmap to get updated progress percentages
       await fetchRoadmap();
 
-      return true;
+      return {
+        success: true,
+        quiz_trigger: response.quiz_trigger,
+      };
     } catch (err: any) {
       console.error('Error updating milestone:', err);
       setError({
         message: err.message || 'Failed to update milestone',
         code: err.code,
       });
-      return false;
+      return { success: false };
     }
   };
 
-  const startMilestone = async (phaseId: string, milestoneId: string): Promise<boolean> => {
-    return updateMilestone(phaseId, milestoneId, {
+  const startMilestone = async (phaseId: string, milestoneId: string): Promise<{ success: boolean }> => {
+    const result = await updateMilestone(phaseId, milestoneId, {
       status: 'in_progress',
       progress_percentage: 0,
     });
+    return { success: result.success };
   };
 
   const completeMilestone = async (
     phaseId: string,
     milestoneId: string,
     notes?: string
-  ): Promise<boolean> => {
+  ): Promise<{ success: boolean; quiz_trigger?: any }> => {
     return updateMilestone(phaseId, milestoneId, {
       status: 'completed',
       progress_percentage: 100,
