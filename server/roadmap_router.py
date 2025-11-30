@@ -85,7 +85,42 @@ async def generate_roadmap(
             raise HTTPException(status_code=401, detail="User not authenticated")
         limit_user(user_id)
 
-        # Generate roadmap using AI
+        supabase = get_supabase_client()
+
+        # Get conversation_id from request (directly passed or from user_context)
+        conversation_id = request.conversation_id
+        if not conversation_id and request.user_context:
+            conversation_id = request.user_context.get("conversation_id")
+
+        # If a roadmap already exists for this user + conversation, return it (idempotent)
+        if conversation_id:
+            try:
+                existing_q = supabase.table("learning_roadmaps").select("*") \
+                    .eq("user_id", user_id) \
+                    .eq("conversation_id", conversation_id) \
+                    .not_.eq("status", "abandoned") \
+                    .order("created_at", desc=True) \
+                    .limit(1) \
+                    .execute()
+                if existing_q.data:
+                    existing = existing_q.data[0]
+                    # Load milestone progress to enrich
+                    progress_result = supabase.table("milestone_progress") \
+                        .select("*") \
+                        .eq("roadmap_id", existing["id"]) \
+                        .execute()
+                    milestone_progress = {mp["milestone_id"]: mp for mp in progress_result.data}
+                    enriched = _enrich_roadmap_with_progress(existing, milestone_progress)
+                    logger.info(f"Idempotent return of existing roadmap {existing['id']} for conversation {conversation_id}")
+                    return {
+                        "status": "existing",
+                        "roadmap_id": existing["id"],
+                        "roadmap": enriched
+                    }
+            except Exception as e:
+                logger.warning(f"Failed idempotent lookup for conversation_id {conversation_id}: {e}")
+
+        # Generate roadmap using AI (no existing one found)
         roadmap_data = await roadmap_generator.generate_roadmap(
             user_goal=request.user_goal,
             conversation_history=request.conversation_history or [],
@@ -93,13 +128,7 @@ async def generate_roadmap(
             domain=request.domain
         )
 
-        # Store in database
-        supabase = get_supabase_client()
-
-        # Get conversation_id from request (directly passed or from user_context)
-        conversation_id = request.conversation_id
-        if not conversation_id and request.user_context:
-            conversation_id = request.user_context.get("conversation_id")
+        # Store in database (supabase initialized earlier)
 
         # Get chat_session_id; validate against chat_sessions to avoid FK errors
         chat_session_id = request.chat_session_id

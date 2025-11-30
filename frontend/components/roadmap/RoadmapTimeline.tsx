@@ -97,6 +97,7 @@ export function RoadmapTimeline({
                   <PhaseCard
                     phase={phase}
                     phaseNumber={index + 1}
+                    roadmapId={roadmap.id}
                     isCompleted={isCompleted}
                     isActive={isActive}
                     isLocked={isLocked}

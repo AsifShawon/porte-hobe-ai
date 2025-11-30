@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 from tools import create_search_tool
+from config import get_supabase_client
 from prompts import THINK_PROMPT, ANSWER_PROMPT, get_think_prompt, get_answer_prompt
 # NEW IMPORTS FOR MCP INTEGRATION
 import subprocess, sys, json, threading, queue, uuid, time as _time
@@ -292,17 +293,35 @@ class TutorAgent:
                 # Trigger roadmap generation when user expresses learning goals
                 if intent_result.intent in [IntentType.ROADMAP_REQUEST, IntentType.LEARNING_NEW_TOPIC]:
                     if intent_result.confidence > 0.6:  # Only trigger if confident
-                        yield {
-                            "type": "roadmap_trigger",
-                            "intent": str(intent_result.intent),
-                            "topic": intent_result.topic,
-                            "domain": str(intent_result.domain),
-                            "user_level": intent_result.user_level or "beginner",
-                            "query": query,
-                            "conversation_id": conversation_id,  # Link roadmap to this conversation
-                            "user_id": user_id
-                        }
-                        logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
+                        # Idempotency: suppress trigger if roadmap already exists for conversation
+                        should_trigger = True
+                        if user_id and conversation_id:
+                            try:
+                                supabase = get_supabase_client()
+                                existing = supabase.table("learning_roadmaps") \
+                                    .select("id") \
+                                    .eq("user_id", user_id) \
+                                    .eq("conversation_id", conversation_id) \
+                                    .not_.eq("status", "abandoned") \
+                                    .limit(1) \
+                                    .execute()
+                                if existing.data:
+                                    should_trigger = False
+                                    logger.info(f"🔁 Roadmap already exists for conversation {conversation_id}; suppressing trigger.")
+                            except Exception as e:
+                                logger.warning(f"Roadmap existence check failed: {e}; proceeding with trigger.")
+                        if should_trigger:
+                            yield {
+                                "type": "roadmap_trigger",
+                                "intent": str(intent_result.intent),
+                                "topic": intent_result.topic,
+                                "domain": str(intent_result.domain),
+                                "user_level": intent_result.user_level or "beginner",
+                                "query": query,
+                                "conversation_id": conversation_id,  # Link roadmap to this conversation
+                                "user_id": user_id
+                            }
+                            logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
 
                 # ---- QUIZ OFFER DISABLED ----
                 # Quizzes will be milestone-based, not triggered by practice requests
