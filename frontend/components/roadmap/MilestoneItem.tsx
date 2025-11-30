@@ -127,9 +127,9 @@ export function MilestoneItem({
           <span className="text-sm font-medium text-primary">{milestone.progress}%</span>
         )}
 
-        {/* Action button */}
+        {/* Action buttons */}
         {!isLocked && (
-          <div onClick={(e) => e.stopPropagation()}>
+          <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
             {isCompleted ? (
               <Button
                 variant="ghost"
@@ -141,10 +141,16 @@ export function MilestoneItem({
                 Done
               </Button>
             ) : isInProgress ? (
-              <Button variant="default" size="sm" onClick={onClick}>
-                <Play className="h-4 w-4 mr-1" />
-                Continue
-              </Button>
+              <>
+                <Button variant="outline" size="sm" onClick={onClick}>
+                  <Play className="h-4 w-4 mr-1" />
+                  Continue
+                </Button>
+                <Button variant="default" size="sm" onClick={onComplete}>
+                  <Check className="h-4 w-4 mr-1" />
+                  Complete
+                </Button>
+              </>
             ) : (
               <Button variant="outline" size="sm" onClick={onClick}>
                 <Play className="h-4 w-4 mr-1" />

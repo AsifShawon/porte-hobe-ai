@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { useActiveRoadmap, useRoadmaps, useRoadmapStats } from '@/hooks/useRoadmap';
 import { RoadmapTimeline } from '@/components/roadmap/RoadmapTimeline';
+import { QuizTriggerDialog } from '@/components/roadmap/QuizTriggerDialog';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { StatsCard } from '@/components/shared/StatsCard';
 import { LoadingState } from '@/components/shared/LoadingState';
@@ -34,7 +35,10 @@ import type { RoadmapStatus } from '@/types/roadmap';
 
 export default function ProgressPage() {
   const [selectedStatus, setSelectedStatus] = useState<RoadmapStatus | 'all'>('active');
-  const { roadmap: activeRoadmap, loading: activeLoading, error: activeError } = useActiveRoadmap();
+  const [quizTrigger, setQuizTrigger] = useState<any>(null);
+  const [quizDialogOpen, setQuizDialogOpen] = useState(false);
+
+  const { roadmap: activeRoadmap, loading: activeLoading, error: activeError, completeMilestone } = useActiveRoadmap();
   const { stats, loading: statsLoading } = useRoadmapStats();
   const {
     roadmaps,
@@ -51,8 +55,15 @@ export default function ProgressPage() {
 
   // Handle milestone completion
   const handleMilestoneComplete = async (phaseId: string, milestoneId: string) => {
-    console.log('Mark milestone complete:', phaseId, milestoneId);
-    // This is handled by the component's internal logic via hooks
+    if (!completeMilestone) return;
+
+    const result = await completeMilestone(phaseId, milestoneId);
+
+    if (result.success && result.quiz_trigger) {
+      // Show quiz trigger dialog
+      setQuizTrigger(result.quiz_trigger);
+      setQuizDialogOpen(true);
+    }
   };
 
   if (activeLoading || statsLoading) {
@@ -233,6 +244,14 @@ export default function ProgressPage() {
           </div>
         )}
       </div>
+
+      {/* Quiz Trigger Dialog */}
+      <QuizTriggerDialog
+        open={quizDialogOpen}
+        onOpenChange={setQuizDialogOpen}
+        quizData={quizTrigger}
+        roadmapId={activeRoadmap?.id}
+      />
     </div>
   );
 }
