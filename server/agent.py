@@ -302,17 +302,9 @@ class TutorAgent:
                         }
                         logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
 
-                # ---- QUIZ OFFER TRIGGER ----
-                # Offer quizzes after practice requests
-                if intent_result.intent == IntentType.PRACTICE_EXERCISES:
-                    if intent_result.confidence > 0.6:
-                        yield {
-                            "type": "quiz_offer",
-                            "topic": intent_result.topic,
-                            "domain": str(intent_result.domain),
-                            "trigger_reason": "practice_requested"
-                        }
-                        logger.info(f"📝 Offered quiz for topic: {intent_result.topic}")
+                # ---- QUIZ OFFER DISABLED ----
+                # Quizzes will be milestone-based, not triggered by practice requests
+                # Users can access quizzes through the roadmap or quiz library
 
                 # Get user context from Memori if available
                 if self.memori_engine and user_id:
@@ -458,23 +450,9 @@ class TutorAgent:
         final_answer = ans_match.group(1).strip() if ans_match else answer_accum.strip()
         yield {"type": "answer_complete", "response": final_answer, "thinking_content": plan_full}
 
-        # ---- QUIZ OFFER AFTER EXPLANATION ----
-        # Offer quiz after explaining concepts (but not for greetings, simple questions)
-        if intent_result and intent_result.intent in [
-            IntentType.REQUESTING_EXPLANATION,
-            IntentType.REVIEW_CONCEPT,
-            IntentType.LEARNING_NEW_TOPIC
-        ]:
-            # Only offer quiz if answer was substantial (>200 chars) and there's a topic
-            if len(final_answer) > 200 and intent_result.topic:
-                yield {
-                    "type": "quiz_offer",
-                    "topic": intent_result.topic,
-                    "domain": str(intent_result.domain),
-                    "trigger_reason": "concept_explained",
-                    "subtopics": [intent_result.topic]  # Can be expanded based on content analysis
-                }
-                logger.info(f"📝 Offered quiz after explaining: {intent_result.topic}")
+        # ---- QUIZ OFFER DISABLED ----
+        # Quiz offers will be triggered from milestone completion, not after every explanation
+        # This prevents quiz spam on every single question
 
     # NEW: helper to call MCP tools
     def _call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:

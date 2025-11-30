@@ -29,8 +29,8 @@ roadmap_generator = RoadmapGeneratorAgent()
 class GenerateRoadmapRequest(BaseModel):
     user_goal: str = Field(..., description="User's learning objective")
     domain: str = Field(default="general", description="Learning domain (programming, math, general)")
-    conversation_history: List[Dict[str, Any]] = Field(default=[], description="Recent conversation")
-    user_context: Dict[str, Any] = Field(default={}, description="User context (level, preferences)")
+    conversation_history: Optional[List[Dict[str, Any]]] = Field(default=None, description="Recent conversation")
+    user_context: Optional[Dict[str, Any]] = Field(default=None, description="User context (level, preferences)")
 
 
 class UpdateMilestoneRequest(BaseModel):
@@ -82,8 +82,8 @@ async def generate_roadmap(
         # Generate roadmap using AI
         roadmap_data = await roadmap_generator.generate_roadmap(
             user_goal=request.user_goal,
-            conversation_history=request.conversation_history,
-            user_context=request.user_context,
+            conversation_history=request.conversation_history or [],
+            user_context=request.user_context or {},
             domain=request.domain
         )
 
