@@ -5,6 +5,7 @@
 
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Dialog,
@@ -45,20 +46,35 @@ export function QuizTriggerDialog({
   onStartQuiz,
 }: QuizTriggerDialogProps) {
   const router = useRouter();
+  const [generating, setGenerating] = useState(false);
 
   if (!quizData) return null;
 
-  const handleStartQuiz = () => {
-    // Close dialog
-    onOpenChange(false);
-
-    // Navigate to quiz page or trigger quiz generation
+  const handleStartQuiz = async () => {
     if (onStartQuiz) {
       onStartQuiz();
-    } else {
-      // Navigate to quiz page (to be implemented)
-      console.log('Starting quiz:', quizData.milestone_id);
+      onOpenChange(false);
+      return;
+    }
+
+    // Generate quiz and navigate to quiz page
+    setGenerating(true);
+
+    try {
+      // TODO: Call quiz generation API
+      // For now, navigate to quiz page
+      // In production, you'd call the quiz generation endpoint first
+      console.log('Generating quiz for milestone:', quizData.milestone_id);
+
+      // Placeholder: navigate to quiz page
       // router.push(`/dashboard/quiz/${quizData.milestone_id}`);
+
+      // Close dialog
+      onOpenChange(false);
+    } catch (error) {
+      console.error('Error starting quiz:', error);
+    } finally {
+      setGenerating(false);
     }
   };
 
