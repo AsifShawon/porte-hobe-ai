@@ -26,10 +26,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   return (
-    <div className="h-screen bg-background overflow-hidden">
+    <div className="min-h-screen bg-background">
       <SidebarProvider>
         <AppSidebar />
-        <SidebarInset className="flex flex-col h-screen">
+        <SidebarInset className="flex flex-col min-h-screen">
           <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <Separator orientation="vertical" className="mr-2 h-4" />
@@ -47,7 +47,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               </BreadcrumbList>
             </Breadcrumb>
           </header>
-          <main className="flex-1 min-h-0 p-10">{children}</main>
+          <main className="flex-1 overflow-y-auto p-10">{children}</main>
         </SidebarInset>
       </SidebarProvider>
     </div>

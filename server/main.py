@@ -2,10 +2,12 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import json
 import uuid
@@ -15,8 +17,9 @@ from agent import TutorAgent
 from auth import get_current_user
 from rate_limit import limit_user
 from config import supabase, get_supabase_client
+from session_manager import SessionManager
 # Updated to use Memori engine instead of embedding_engine
-from memori_engine import initialize_memori_engine, get_memori_engine
+from memori_engine import initialize_memori_engine, get_memori_engine, store_user_memory
 from mcp_agents import scraper_agent, file_agent, math_agent, vector_agent
 from html_utils import sanitize_html, generate_teaching_html
 
@@ -28,6 +31,8 @@ from goal_router import router as goal_router
 from achievement_router import router as achievement_router
 from practice_router import router as practice_router
 from resource_router import router as resource_router
+from quiz_router import router as quiz_router
+from roadmap_router import router as roadmap_router
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -79,6 +84,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"❌ Validation Error: {exc.errors()}")
+    try:
+        body = await request.json()
+        logger.error(f"Request Body: {json.dumps(body, indent=2)}")
+    except Exception:
+        logger.error("Could not read request body")
+    
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(exc.body)},
+    )
+
 # --- Include Routers ---
 app.include_router(file_router)
 app.include_router(progress_router)
@@ -87,6 +106,8 @@ app.include_router(goal_router)
 app.include_router(achievement_router)
 app.include_router(practice_router)
 app.include_router(resource_router)
+app.include_router(quiz_router)
+app.include_router(roadmap_router)
 
 # --- Request/Response Models ---
 class MessageItem(BaseModel):
@@ -97,6 +118,7 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[MessageItem]] = []
     request_id: Optional[str] = None  # Optional: frontend can provide its own ID
+    conversation_id: Optional[str] = None  # Conversation ID for tracking and linking to roadmaps
     topic_id: Optional[str] = None  # Topic context for progress tracking
     attachments: Optional[List[str]] = []  # Upload IDs to include as context
     enable_web_search: bool = False  # Enable web scraping
@@ -163,10 +185,13 @@ async def health_check():
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
-    """Main chat endpoint streaming thinking tokens first then answer tokens."""
+    """Main chat endpoint with reliable message persistence via Session Manager."""
     if tutor_agent is None:
         logger.error("❌ TutorAgent not initialized")
         raise HTTPException(status_code=503, detail="AI service is not available. Please try again later.")
+
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Database service is not available.")
 
     # Rate limit by user
     try:
@@ -176,45 +201,146 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
 
     async def event_stream():
         request_id = request.request_id or str(uuid.uuid4())
-        start_ts = asyncio.get_event_loop().time()
+        conversation_id = request.conversation_id or str(uuid.uuid4())
+        thinking_buffer = ""
+        answer_buffer = ""
+        final_metadata: Dict[str, Any] = {}
+        session_id = None
+        user_message_id = None
+        
+        # Initialize Session Manager
+        session_mgr = SessionManager(supabase)
+        
         try:
+            # Get or create session with roadmap linking
+            roadmap_id = request.metadata.get("roadmap_id") if hasattr(request, "metadata") and request.metadata else None
+            topic_id = request.metadata.get("topic_id") if hasattr(request, "metadata") and request.metadata else None
+            
+            session = session_mgr.get_or_create_session(
+                user_id=user["user_id"],
+                conversation_id=conversation_id,
+                roadmap_id=roadmap_id,
+                topic_id=topic_id,
+                title=request.message[:50] + "..." if len(request.message) > 50 else request.message
+            )
+            session_id = session["id"]
+            
+            # Convert history
             langchain_history = convert_history_to_langchain(request.history)
-            # Save the user message to chat_history (best-effort)
+            
+            # Save user message immediately with retry logic
             try:
-                if supabase is not None:
-                    supabase.table("chat_history").insert({
-                        "user_id": user["user_id"],
-                        "conversation_id": None,
-                        "role": "user",
-                        "message": request.message,
-                    }).execute()
-            except Exception:
-                logger.debug("chat_history insert (user) failed", exc_info=True)
-            # Stream phases (with user_id for intent classification)
-            async for evt in tutor_agent.stream_phases(request.message, langchain_history, user_id=user.get("user_id")):
+                user_msg = session_mgr.save_message(
+                    session_id=session_id,
+                    role="user",
+                    content=request.message,
+                    message_type="user_message",
+                    metadata={
+                        "roadmap_id": roadmap_id,
+                        "topic_id": topic_id
+                    } if roadmap_id or topic_id else None
+                )
+                user_message_id = user_msg["id"]
+                logger.info(f"✅ User message saved: {user_message_id}")
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Failed to save user message: {e}")
+                # Still continue with streaming, but log the failure
+
+            # Stream AI response
+            async for evt in tutor_agent.stream_phases(
+                request.message,
+                langchain_history,
+                user_id=user.get("user_id"),
+                conversation_id=conversation_id
+            ):
+                evt_type = evt.get("type")
+                
+                if evt_type == "thinking_delta":
+                    thinking_buffer += evt.get("delta", "")
+                    
+                elif evt_type == "thinking_complete":
+                    thinking_buffer = evt.get("thinking_content", thinking_buffer)
+                    
+                elif evt_type == "answer_delta":
+                    answer_buffer += evt.get("delta", "")
+                    
+                elif evt_type == "roadmap_trigger":
+                    trigger_meta = {k: v for k, v in evt.items() if k not in {"delta"}}
+                    final_metadata.setdefault("roadmap_triggers", []).append(trigger_meta)
+                    
+                    # Save roadmap trigger as separate message
+                    try:
+                        session_mgr.save_message(
+                            session_id=session_id,
+                            role="system",
+                            content=f"Roadmap generated: {trigger_meta.get('topic', 'Learning Path')}",
+                            message_type="roadmap_trigger",
+                            metadata=trigger_meta
+                        )
+                        logger.info(f"✅ Roadmap trigger saved for session {session_id}")
+                        
+                        # Link roadmap to session if roadmap_id provided
+                        if trigger_meta.get("roadmap_id"):
+                            session_mgr.link_roadmap_to_session(session_id, trigger_meta["roadmap_id"])
+                    except Exception as e:
+                        logger.error(f"❌ Failed to save roadmap trigger: {e}")
+                        
+                elif evt_type == "quiz_trigger":
+                    quiz_meta = {k: v for k, v in evt.items() if k not in {"delta"}}
+                    final_metadata.setdefault("quiz_triggers", []).append(quiz_meta)
+                    
+                    # Save quiz trigger
+                    try:
+                        session_mgr.save_message(
+                            session_id=session_id,
+                            role="system",
+                            content=f"Quiz generated: {quiz_meta.get('title', 'Practice Quiz')}",
+                            message_type="quiz_trigger",
+                            metadata=quiz_meta
+                        )
+                        logger.info(f"✅ Quiz trigger saved for session {session_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to save quiz trigger: {e}")
+                        
+                elif evt_type == "answer_complete":
+                    answer_buffer = evt.get("response", answer_buffer)
+                    
+                    # Save complete assistant message with thinking
+                    try:
+                        assistant_msg = session_mgr.save_message(
+                            session_id=session_id,
+                            role="assistant",
+                            content=answer_buffer,
+                            message_type="assistant_message",
+                            thinking_content=thinking_buffer or None,
+                            metadata=final_metadata if final_metadata else None
+                        )
+                        logger.info(f"✅ Assistant message saved: {assistant_msg['id']}")
+                    except Exception as e:
+                        logger.error(f"❌ CRITICAL: Failed to save assistant message: {e}")
+
+                # Stream event to client
                 base = {
                     "request_id": request_id,
+                    "conversation_id": conversation_id,
+                    "session_id": session_id,
                     "timestamp": str(asyncio.get_event_loop().time())
                 }
                 payload = {**base, **evt}
                 yield f"data: {json.dumps(payload)}\n\n"
+                
         except Exception as e:
-            logger.exception("Streaming error")
+            logger.exception("❌ Streaming error")
             err_payload = {
                 "type": "error",
                 "response": "Streaming failed due to an internal error.",
                 "thinking_content": "An exception occurred; please retry.",
                 "request_id": request_id,
+                "conversation_id": conversation_id,
+                "session_id": session_id,
                 "timestamp": str(asyncio.get_event_loop().time())
             }
             yield f"data: {json.dumps(err_payload)}\n\n"
-        finally:
-            # Best-effort: store assistant reply and summary into memory
-            # This requires reading the last event from the stream; here we can't,
-            # so the non-streaming endpoint will do the memory upsert. In the
-            # streaming case, we rely on the client to optionally call a dedicated
-            # endpoint in later steps. Left as-is to avoid buffering the stream.
-            pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
@@ -547,6 +673,9 @@ class SaveMessageRequest(BaseModel):
     role: str
     message: str
     conversation_id: Optional[str] = None
+    thinking_content: Optional[str] = None
+    message_type: Optional[str] = None  # user_message / assistant_message / system / roadmap_trigger
+    metadata: Optional[Dict[str, Any]] = None
 
 @app.post("/api/chat/save-message")
 async def save_message(
@@ -559,6 +688,8 @@ async def save_message(
             raise HTTPException(status_code=500, detail="Database not configured")
         
         # Insert message into chat_history
+        # Only use columns that exist in the legacy chat_history table
+        # (id, user_id, conversation_id, role, message, created_at)
         result = supabase.table("chat_history").insert({
             "user_id": user["user_id"],
             "conversation_id": request.conversation_id,
@@ -638,6 +769,80 @@ async def delete_messages(
     except Exception as e:
         logger.exception("Failed to delete messages")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Lightweight SSE for chat events (progress updates, new messages) ---
+@app.get("/api/chat/events")
+async def chat_events(
+    request: Request,
+    session_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    since: Optional[str] = None,
+    user=Depends(get_current_user)
+):
+    """Server-Sent Events stream for a user's chat session.
+
+    Connect with either `session_id` or `conversation_id` (legacy linkage).
+    Emits newly inserted `chat_messages` rows as events.
+    """
+    supabase_client = get_supabase_client()
+    if not supabase_client:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    # Resolve session_id from conversation_id if needed
+    resolved_session_id = session_id
+    if not resolved_session_id and conversation_id:
+        try:
+            sess = supabase_client.table("chat_sessions").select("id").eq("conversation_id", conversation_id).eq("user_id", user["user_id"]).limit(1).execute()
+            if sess.data:
+                resolved_session_id = sess.data[0]["id"]
+        except Exception:
+            logger.debug("Failed to resolve session by conversation_id", exc_info=True)
+
+    if not resolved_session_id:
+        raise HTTPException(status_code=400, detail="Missing session linkage (session_id or conversation_id)")
+
+    # Track last seen time
+    import time
+    last_seen = since or datetime.utcnow().isoformat()
+
+    async def sse_loop():
+        try:
+            while True:
+                # Client disconnect check
+                if await request.is_disconnected():
+                    break
+
+                # Fetch new messages for this session after last_seen
+                try:
+                    res = supabase_client.table("chat_messages")\
+                        .select("id, role, content, thinking_content, message_type, metadata, created_at")\
+                        .eq("session_id", resolved_session_id)\
+                        .gt("created_at", last_seen)\
+                        .order("created_at", desc=False)\
+                        .limit(50)\
+                        .execute()
+
+                    for row in res.data or []:
+                        last_seen = row["created_at"]
+                        payload = {
+                            "type": "chat_message",
+                            "session_id": resolved_session_id,
+                            "data": row,
+                        }
+                        yield f"data: {json.dumps(payload)}\n\n"
+                except Exception:
+                    logger.debug("Polling chat_messages failed", exc_info=True)
+
+                # Sleep briefly to avoid hammering DB
+                await asyncio.sleep(1.0)
+        except Exception:
+            logger.debug("SSE loop error", exc_info=True)
+
+    return StreamingResponse(sse_loop(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Content-Type": "text/event-stream"
+    })
 
 # --- Run Server ---
 if __name__ == "__main__":

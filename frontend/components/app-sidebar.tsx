@@ -139,7 +139,7 @@ const data = {
       items: [
         {
           title: "My Badges",
-          url: "/dashboard/achievements/badges",
+          url: "/dashboard/achievements/",
         },
         {
           title: "Milestones",
@@ -159,6 +159,10 @@ const data = {
         {
           title: "Overall Stats",
           url: "/dashboard/progress",
+        },
+        {
+          title: "Roadmaps",
+          url: "/dashboard/my-progress/roadmaps",
         },
         {
           title: "Topic Progress",

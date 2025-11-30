@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tools import create_search_tool
 from embedding_engine import search_user_memory, search_universal_memory
+from specialist_models import solve_math, solve_code, verify_answer, route_query
 
 # Initialize shared search tool once
 try:
@@ -210,6 +211,59 @@ TOOL_DEFS = {
             "required": ["name"],
         },
     },
+    "solve_math": {
+        "name": "solve_math",
+        "description": "Solve mathematical problems step-by-step using mathstral model. Handles equations, calculus, algebra, etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "problem": {"type": "string", "description": "Math problem to solve"},
+                "show_steps": {"type": "boolean", "description": "Show step-by-step solution", "default": True},
+                "verify": {"type": "boolean", "description": "Verify answer with verification model", "default": True}
+            },
+            "required": ["problem"],
+        },
+    },
+    "solve_code": {
+        "name": "solve_code",
+        "description": "Generate code solutions using qwen2.5-coder:7b. Supports multiple languages with quality verification.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Coding task description"},
+                "language": {"type": "string", "description": "Programming language (python, javascript, java, etc.)", "default": "python"},
+                "test_cases": {"type": "array", "description": "Test cases for validation"},
+                "verify": {"type": "boolean", "description": "Verify code quality", "default": True}
+            },
+            "required": ["task"],
+        },
+    },
+    "verify_answer": {
+        "name": "verify_answer",
+        "description": "Verify answer correctness using gemma3:4b model. Returns confidence score and suggestions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Original question"},
+                "answer": {"type": "string", "description": "Proposed answer"},
+                "explanation": {"type": "string", "description": "Optional explanation of the answer"}
+            },
+            "required": ["question", "answer"],
+        },
+    },
+    "route_query": {
+        "name": "route_query",
+        "description": "Determine which specialist model to use for a query. Returns routing decision.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "User query"},
+                "intent": {"type": "string", "description": "Intent type", "default": "general"},
+                "domain": {"type": "string", "description": "Domain (programming/math/general)", "default": "general"}
+            },
+            "required": ["query"],
+        },
+    },
 }
 
 
@@ -258,6 +312,31 @@ def handle_request(req: Dict[str, Any]) -> None:
                     result = current_time(args.get("timezone"))
                 else:
                     raise ValueError(f"Unknown utility: {util_name}")
+            elif name == "solve_math":
+                result = solve_math(
+                    problem=arguments.get("problem", ""),
+                    show_steps=arguments.get("show_steps", True),
+                    verify=arguments.get("verify", True)
+                )
+            elif name == "solve_code":
+                result = solve_code(
+                    task=arguments.get("task", ""),
+                    language=arguments.get("language", "python"),
+                    test_cases=arguments.get("test_cases"),
+                    verify=arguments.get("verify", True)
+                )
+            elif name == "verify_answer":
+                result = verify_answer(
+                    question=arguments.get("question", ""),
+                    answer=arguments.get("answer", ""),
+                    explanation=arguments.get("explanation")
+                )
+            elif name == "route_query":
+                result = route_query(
+                    query=arguments.get("query", ""),
+                    intent=arguments.get("intent", "general"),
+                    domain=arguments.get("domain", "general")
+                )
             else:
                 raise ValueError(f"Unknown tool: {name}")
         else:

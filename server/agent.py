@@ -16,7 +16,7 @@ from contextlib import suppress
 # MEMORI INTEGRATION
 from memori_engine import MemoriEngine
 # PHASE 3: INTENT CLASSIFICATION & DYNAMIC PROMPTS
-from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel
+from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel, Domain
 from dynamic_prompts import DynamicPromptManager
 
 # --- Logging Setup ---
@@ -250,11 +250,11 @@ class TutorAgent:
             if "think" in event:
                 print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
 
-    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield structured streaming events for frontend consumption.
         Event types:
           intent_detected, thinking_start, thinking_delta, thinking_complete,
-          answer_start, answer_delta, answer_complete
+          answer_start, answer_delta, answer_complete, roadmap_trigger
         """
         # Build history text and conversation list for intent classification
         history_lines = []
@@ -287,6 +287,26 @@ class TutorAgent:
                     "domain": str(intent_result.domain),
                     "thinking_level": str(intent_result.thinking_level)
                 }
+
+                # ---- ROADMAP GENERATION TRIGGER ----
+                # Trigger roadmap generation when user expresses learning goals
+                if intent_result.intent in [IntentType.ROADMAP_REQUEST, IntentType.LEARNING_NEW_TOPIC]:
+                    if intent_result.confidence > 0.6:  # Only trigger if confident
+                        yield {
+                            "type": "roadmap_trigger",
+                            "intent": str(intent_result.intent),
+                            "topic": intent_result.topic,
+                            "domain": str(intent_result.domain),
+                            "user_level": intent_result.user_level or "beginner",
+                            "query": query,
+                            "conversation_id": conversation_id,  # Link roadmap to this conversation
+                            "user_id": user_id
+                        }
+                        logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
+
+                # ---- QUIZ OFFER DISABLED ----
+                # Quizzes will be milestone-based, not triggered by practice requests
+                # Users can access quizzes through the roadmap or quiz library
 
                 # Get user context from Memori if available
                 if self.memori_engine and user_id:
@@ -431,6 +451,10 @@ class TutorAgent:
         ans_match = re.search(r"<ANSWER>(.*?)</ANSWER>", answer_accum, re.DOTALL)
         final_answer = ans_match.group(1).strip() if ans_match else answer_accum.strip()
         yield {"type": "answer_complete", "response": final_answer, "thinking_content": plan_full}
+
+        # ---- QUIZ OFFER DISABLED ----
+        # Quiz offers will be triggered from milestone completion, not after every explanation
+        # This prevents quiz spam on every single question
 
     # NEW: helper to call MCP tools
     def _call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
