@@ -2,22 +2,26 @@
 
 Notes
 -----
-- Real model calls should be placed in `embed_text()` (OpenAI, Gemini, etc.).
-- When no embedding API key is configured, we fall back to a deterministic
-  mock embedding that is stable across runs for the same text. This enables
-  local development and tests without external dependencies.
+- Uses local Ollama with embeddinggemma model for embeddings
+- Falls back to deterministic mock if Ollama is unavailable
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Iterable, List, Optional, Tuple, Dict, Any
 
 import numpy as np
+import ollama
 
 from config import supabase
 
-EMBED_DIM = 1536
+logger = logging.getLogger(__name__)
+
+# EmbeddingGemma produces 768-dimensional embeddings
+EMBED_DIM = 768
+EMBEDDING_MODEL = "embeddinggemma:latest"
 
 
 def _deterministic_vec(text: str, dim: int = EMBED_DIM) -> List[float]:
@@ -52,11 +56,31 @@ def chunk_text(text: str, max_tokens: int = 500) -> List[str]:
 
 
 def embed_text(texts: Iterable[str]) -> List[List[float]]:
-    """Embed a batch of texts.
+    """Embed a batch of texts using Ollama embeddinggemma model.
 
-    Replace this with calls to your provider. For now, use deterministic mock.
+    Falls back to deterministic mock if Ollama is unavailable.
     """
-    return [_deterministic_vec(t) for t in texts]
+    texts_list = list(texts)
+    if not texts_list:
+        return []
+
+    try:
+        # Use Ollama embeddinggemma for embeddings
+        embeddings = []
+        for text in texts_list:
+            response = ollama.embeddings(
+                model=EMBEDDING_MODEL,
+                prompt=text
+            )
+            embeddings.append(response['embedding'])
+
+        logger.debug(f"Generated {len(embeddings)} embeddings using {EMBEDDING_MODEL}")
+        return embeddings
+
+    except Exception as e:
+        logger.warning(f"Ollama embedding failed: {e}. Falling back to deterministic embedding.")
+        # Fallback to deterministic embedding
+        return [_deterministic_vec(t) for t in texts_list]
 
 
 def store_user_memory(user_id: str, query: str, response: str, summary: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

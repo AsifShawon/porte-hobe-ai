@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 from tools import create_search_tool
+from config import get_supabase_client
 from prompts import THINK_PROMPT, ANSWER_PROMPT, get_think_prompt, get_answer_prompt
 # NEW IMPORTS FOR MCP INTEGRATION
 import subprocess, sys, json, threading, queue, uuid, time as _time
@@ -17,6 +18,7 @@ from contextlib import suppress
 from memori_engine import MemoriEngine
 # PHASE 3: INTENT CLASSIFICATION & DYNAMIC PROMPTS
 from intent_classifier import IntentClassifier, IntentResult, Domain, ThinkingLevel
+from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel, Domain
 from dynamic_prompts import DynamicPromptManager
 from config import (
     ROUTE_CONFIDENCE_MIN,
@@ -733,6 +735,21 @@ class TutorAgent:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         history_lines: List[str] = []
         conversation_history: List[Dict[str, str]] = []
+        """Run the agent with streaming output for console use"""
+        messages = history + [HumanMessage(content=query)]
+        async for event in self.graph.astream({"messages": messages}):
+            if "think" in event:
+                print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
+
+    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Yield structured streaming events for frontend consumption.
+        Event types:
+          intent_detected, thinking_start, thinking_delta, thinking_complete,
+          answer_start, answer_delta, answer_complete, roadmap_trigger
+        """
+        # Build history text and conversation list for intent classification
+        history_lines = []
+        conversation_history = []
         for m in history:
             role = "User" if isinstance(m, HumanMessage) else "Tutor"
             history_lines.append(f"{role}: {m.content}")
@@ -764,6 +781,58 @@ class TutorAgent:
         if self.enable_dynamic_prompts and self.prompt_manager and intent_result:
             try:
                 thinking_prompt_template, answer_prompt_text = self.prompt_manager.get_prompts(
+                # ---- ROADMAP GENERATION TRIGGER ----
+                # Trigger roadmap generation when user expresses learning goals
+                if intent_result.intent in [IntentType.ROADMAP_REQUEST, IntentType.LEARNING_NEW_TOPIC]:
+                    if intent_result.confidence > 0.6:  # Only trigger if confident
+                        # Idempotency: suppress trigger if roadmap already exists for conversation
+                        should_trigger = True
+                        if user_id and conversation_id:
+                            try:
+                                supabase = get_supabase_client()
+                                existing = supabase.table("learning_roadmaps") \
+                                    .select("id") \
+                                    .eq("user_id", user_id) \
+                                    .eq("conversation_id", conversation_id) \
+                                    .not_.eq("status", "abandoned") \
+                                    .limit(1) \
+                                    .execute()
+                                if existing.data:
+                                    should_trigger = False
+                                    logger.info(f"🔁 Roadmap already exists for conversation {conversation_id}; suppressing trigger.")
+                            except Exception as e:
+                                logger.warning(f"Roadmap existence check failed: {e}; proceeding with trigger.")
+                        if should_trigger:
+                            yield {
+                                "type": "roadmap_trigger",
+                                "intent": str(intent_result.intent),
+                                "topic": intent_result.topic,
+                                "domain": str(intent_result.domain),
+                                "user_level": intent_result.user_level or "beginner",
+                                "query": query,
+                                "conversation_id": conversation_id,  # Link roadmap to this conversation
+                                "user_id": user_id
+                            }
+                            logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
+
+                # ---- QUIZ OFFER DISABLED ----
+                # Quizzes will be milestone-based, not triggered by practice requests
+                # Users can access quizzes through the roadmap or quiz library
+
+                # Get user context from Memori if available
+                if self.memori_engine and user_id:
+                    try:
+                        # TODO: Add method to get user context from Memori
+                        # For now, use empty context
+                        user_context = {
+                            "learning_history": [],
+                            "preferences": {}
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not fetch user context from Memori: {e}")
+
+                # Get dynamic prompts based on intent
+                thinking_prompt_text, answer_prompt_text = self.prompt_manager.get_prompts(
                     intent_result,
                     query,
                     user_context,
@@ -932,6 +1001,11 @@ class TutorAgent:
             "specialist_model": specialist_model,
         }
 
+        # ---- QUIZ OFFER DISABLED ----
+        # Quiz offers will be triggered from milestone completion, not after every explanation
+        # This prevents quiz spam on every single question
+
+    # NEW: helper to call MCP tools
     def _call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if not self.mcp_client or not self.mcp_client.alive:
             raise RuntimeError("MCP client not running")
