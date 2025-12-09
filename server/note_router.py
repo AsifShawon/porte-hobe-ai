@@ -335,6 +335,34 @@ async def inject_chat_to_note(
     note_id = request.note_id
 
     try:
+        # Auto-create or find "Chat Notes" folder if no folder_id is provided
+        folder_id = request.folder_id
+        if not folder_id and not note_id:
+            # Check if "Chat Notes" folder exists
+            folder_result = (
+                supabase.table("note_folders")
+                .select("id")
+                .eq("user_id", user["user_id"])
+                .eq("name", "Chat Notes")
+                .limit(1)
+                .execute()
+            )
+            
+            if folder_result.data and len(folder_result.data) > 0:
+                folder_id = folder_result.data[0]["id"]
+            else:
+                # Create "Chat Notes" folder
+                new_folder = supabase.table("note_folders").insert(
+                    {
+                        "user_id": user["user_id"],
+                        "name": "Chat Notes",
+                        "icon": "💬",
+                        "color": "#3b82f6",
+                    }
+                ).execute()
+                if new_folder.data:
+                    folder_id = new_folder.data[0]["id"]
+
         if not note_id:
             title = request.title or f"Chat Note - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
             content_json = {
@@ -346,7 +374,7 @@ async def inject_chat_to_note(
             payload = {
                 "user_id": user["user_id"],
                 "title": title,
-                "folder_id": request.folder_id,
+                "folder_id": folder_id,
                 "content_json": content_json,
                 "content_text": extract_text_from_tiptap(content_json),
             }

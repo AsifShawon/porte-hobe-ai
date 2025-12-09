@@ -274,7 +274,6 @@ class TutorAgent:
 
             # Extract topics from plan
             if plan and len(plan) > 50:
-                import re
                 topics = re.findall(r'(?:about|learn|explain|discuss|topic|subject)\s+([a-zA-Z0-9\s]+?)(?:\.|,|\n|$)', plan, re.IGNORECASE)
                 if topics:
                     context_terms.extend(topics[:2])

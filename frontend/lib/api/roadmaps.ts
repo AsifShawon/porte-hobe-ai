@@ -1,8 +1,8 @@
 /**
  * API Client for Learning Roadmaps
+ * Uses Next.js API routes (not direct FastAPI calls)
  */
 
-import { ApiClient } from './client';
 import type {
   LearningRoadmap,
   CreateRoadmapRequest,
@@ -13,15 +13,41 @@ import type {
   MilestoneProgress,
 } from '@/types/roadmap';
 
-class RoadmapApiClient extends ApiClient {
+class RoadmapApiClient {
+  private async fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const response = await fetch(endpoint, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || errorData.message || `Request failed: ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
   /**
    * Generate a new learning roadmap based on user goals
    */
   async generateRoadmap(request: CreateRoadmapRequest): Promise<CreateRoadmapResponse> {
-    return this.request<CreateRoadmapResponse>('/api/roadmaps/generate', {
+    const response = await fetch('/api/roadmaps/generate', {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(request),
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || errorData.message || `Failed to generate roadmap: ${response.statusText}`);
+    }
+
+    return await response.json();
   }
 
   /**
@@ -37,7 +63,7 @@ class RoadmapApiClient extends ApiClient {
     const query = params.toString();
     const endpoint = query ? `/api/roadmaps?${query}` : '/api/roadmaps';
 
-    return this.request<{ roadmaps: LearningRoadmap[]; count: number }>(endpoint);
+    return this.fetchApi<{ roadmaps: LearningRoadmap[]; count: number }>(endpoint);
   }
 
   /**
@@ -47,7 +73,7 @@ class RoadmapApiClient extends ApiClient {
     roadmap: LearningRoadmap;
     milestone_progress: MilestoneProgress[];
   }> {
-    return this.request<{
+    return this.fetchApi<{
       roadmap: LearningRoadmap;
       milestone_progress: MilestoneProgress[];
     }>(`/api/roadmaps/${roadmapId}`);
@@ -75,7 +101,7 @@ class RoadmapApiClient extends ApiClient {
       trigger_reason: string;
     };
   }> {
-    return this.request<{
+    return this.fetchApi<{
       status: string;
       milestone_progress: MilestoneProgress;
       quiz_trigger?: {
@@ -131,7 +157,7 @@ class RoadmapApiClient extends ApiClient {
     roadmapId: string,
     request: AdaptRoadmapRequest
   ): Promise<{ status: string; message: string; roadmap: LearningRoadmap }> {
-    return this.request<{ status: string; message: string; roadmap: LearningRoadmap }>(
+    return this.fetchApi<{ status: string; message: string; roadmap: LearningRoadmap }>(
       `/api/roadmaps/${roadmapId}/adapt`,
       {
         method: 'POST',
@@ -144,7 +170,7 @@ class RoadmapApiClient extends ApiClient {
    * Delete (abandon) a roadmap
    */
   async deleteRoadmap(roadmapId: string): Promise<{ status: string; message: string }> {
-    return this.request<{ status: string; message: string }>(
+    return this.fetchApi<{ status: string; message: string }>(
       `/api/roadmaps/${roadmapId}`,
       {
         method: 'DELETE',
