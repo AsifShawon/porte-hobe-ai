@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator, Optional
+from typing import Sequence, TypedDict, Annotated, List, Any, Dict, AsyncGenerator, Optional, Tuple
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
@@ -16,8 +16,18 @@ from contextlib import suppress
 # MEMORI INTEGRATION
 from memori_engine import MemoriEngine
 # PHASE 3: INTENT CLASSIFICATION & DYNAMIC PROMPTS
-from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel
+from intent_classifier import IntentClassifier, IntentResult, Domain, ThinkingLevel
 from dynamic_prompts import DynamicPromptManager
+from config import (
+    ROUTE_CONFIDENCE_MIN,
+    VERIFY_CONFIDENCE_MAX,
+    CACHE_TTL_SEC,
+    MCP_TOOL_TIMEOUT_SEC,
+    ENABLE_GRAPH_ADAPTIVE,
+    ENABLE_STREAM_ADAPTIVE,
+    MATH_VERIFY_LEVELS,
+    CODE_VERIFY_LEVELS,
+)
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -29,101 +39,146 @@ class AgentState(TypedDict):
     """The state that flows through the graph."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
     final_answer: str
+    plan: str
+    route: str
+    specialist_output: str
+    specialist_model: str
+    verified_answer: str
+    tool_context: str
     intent_result: Optional[IntentResult]  # PHASE 3: Store detected intent
 
 
 # --- Tutor Agent ---
+
 class TutorAgent:
-    """Two-phase reasoning tutor with tool-calling and streaming answers."""
+    """Multi-stage tutor agent with planner, specialist routing, and verifier."""
 
-    def __init__(self, model_name: str = "qwen2.5:3b-instruct-q5_K_M", enable_memori: bool = True, enable_dynamic_prompts: bool = True) -> None:
-        logger.info(f"🚀 Initializing TutorAgent with model: {model_name}")
+    def __init__(
+        self,
+        model_name: str = "qwen2.5:3b-instruct-q5_K_M",
+        math_model: str = "mathstral:latest",
+        code_model: str = "qwen2.5-coder:7b",
+        verifier_model: str = "gemma3:4b",
+        enable_memori: bool = True,
+        enable_dynamic_prompts: bool = True,
+        # Adaptive routing configuration
+        enable_adaptive: bool = True,
+        planner_confidence_threshold: float = ROUTE_CONFIDENCE_MIN,
+        specialist_min_difficulty: str = "medium",  # easy|medium|hard
+        verifier_confidence_threshold: float = VERIFY_CONFIDENCE_MAX,
+        max_cache_size: int = 128,
+        cache_ttl_seconds: int = CACHE_TTL_SEC,
+    ) -> None:
+        logger.info(
+            "🚀 Initializing TutorAgent pipeline (planner=%s, math=%s, code=%s, verifier=%s)",
+            model_name,
+            math_model,
+            code_model,
+            verifier_model,
+        )
 
-        self.llm = ChatOllama(model=model_name, temperature=0.1, stream=True)  # enable streaming
-        self.tools = [create_search_tool()]  # legacy direct search tool
-        # Initialize MCP client (for web_search, time, weather)
-        self.mcp_client = MCPClient(start=True)
+        self.planner_model_name = model_name
+        self.math_model_name = math_model
+        self.code_model_name = code_model
+        self.general_model_name = model_name
+        self.verifier_model_name = verifier_model
 
-        # Initialize Memori for long-term memory management
+        self.planner_llm = ChatOllama(model=self.planner_model_name, temperature=0.1, stream=True)
+        self.math_llm = ChatOllama(model=self.math_model_name, temperature=0.05, stream=False)
+        self.code_llm = ChatOllama(model=self.code_model_name, temperature=0.1, stream=False)
+        self.general_llm = ChatOllama(model=self.general_model_name, temperature=0.1, stream=False)
+        self.verifier_llm = ChatOllama(model=self.verifier_model_name, temperature=0.05, stream=True)
+
+        try:
+            self.tools = [create_search_tool()]
+        except Exception as exc:
+            logger.warning("⚠️  Search tool unavailable: %s", exc)
+            self.tools = []
+        self.mcp_client = MCPClient(start=True, timeout=float(MCP_TOOL_TIMEOUT_SEC))
+
         self.memori_engine = None
         if enable_memori:
             try:
-                self.memori_engine = MemoriEngine(
-                    ollama_model=model_name,
-                    verbose=False  # Set to True for debugging
-                )
+                self.memori_engine = MemoriEngine(ollama_model=self.planner_model_name, verbose=False)
                 logger.info("✅ Memori long-term memory enabled")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to initialize Memori: {e}")
+            except Exception as exc:
+                logger.warning("⚠️  Failed to initialize Memori: %s", exc)
                 logger.info("Continuing without Memori integration")
 
-        # PHASE 3: Initialize intent classification and dynamic prompts
-        self.enable_dynamic_prompts = enable_dynamic_prompts
-        self.intent_classifier = None
-        self.prompt_manager = None
+        self.intent_classifier: Optional[IntentClassifier] = None
+        try:
+            self.intent_classifier = IntentClassifier(model_name=self.planner_model_name)
+            logger.info("✅ Intent classifier ready")
+        except Exception as exc:
+            logger.warning("⚠️  Failed to initialize intent classifier: %s", exc)
 
-        if enable_dynamic_prompts:
+        self.enable_dynamic_prompts = enable_dynamic_prompts and self.intent_classifier is not None
+        self.prompt_manager: Optional[DynamicPromptManager] = None
+        if self.enable_dynamic_prompts:
             try:
-                self.intent_classifier = IntentClassifier(model_name=model_name)
                 self.prompt_manager = DynamicPromptManager()
                 logger.info("✅ Dynamic prompts enabled (Phase 3)")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to initialize dynamic prompts: {e}")
+            except Exception as exc:
+                logger.warning("⚠️  Failed to initialize dynamic prompts: %s", exc)
                 logger.info("Falling back to static prompts")
                 self.enable_dynamic_prompts = False
 
-        # Load prompts from prompts.py
         self.think_prompt = THINK_PROMPT
         self.answer_prompt = ANSWER_PROMPT
 
-        # Optional: Allow dynamic prompt selection
-        self.subject_focus = None  # Can be set to "math", "coding", etc.
-        self.complexity_level = "standard"  # Can be "simple" or "standard"
+        self.subject_focus: Optional[str] = None
+        self.complexity_level = "standard"
 
         self.graph = self._build_graph()
         logger.info("✅ TutorAgent initialized successfully.")
 
-    # --- Prompt Configuration ---
+        # Adaptive and cache configuration
+        self.enable_adaptive = enable_adaptive and ENABLE_GRAPH_ADAPTIVE
+        self.enable_stream_adaptive = ENABLE_STREAM_ADAPTIVE
+        self.planner_conf_threshold = planner_confidence_threshold
+        self.verifier_conf_threshold = verifier_confidence_threshold
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._max_cache_size = max_cache_size
+        self._answer_cache: Dict[str, Tuple[float, str]] = {}
+        self.math_verify_levels = set(MATH_VERIFY_LEVELS)
+        self.code_verify_levels = set(CODE_VERIFY_LEVELS)
+
     def set_subject_focus(self, subject: str) -> None:
-        """Set the subject focus for specialized prompts (math, coding, etc.)"""
         self.subject_focus = subject
         self.answer_prompt = get_answer_prompt(subject, self.complexity_level)
-        logger.info(f"🎯 Set subject focus to: {subject}")
+        logger.info("🎯 Set subject focus to: %s", subject)
 
     def set_complexity_level(self, level: str) -> None:
-        """Set the complexity level (simple, standard)"""
         if level in ["simple", "standard"]:
             self.complexity_level = level
             self.think_prompt = get_think_prompt(level)
             if self.subject_focus:
                 self.answer_prompt = get_answer_prompt(self.subject_focus, level)
-            logger.info(f"📊 Set complexity level to: {level}")
+            logger.info("📊 Set complexity level to: %s", level)
 
     def reset_prompts(self) -> None:
-        """Reset to default prompts"""
         self.think_prompt = THINK_PROMPT
         self.answer_prompt = ANSWER_PROMPT
         self.subject_focus = None
         self.complexity_level = "standard"
         logger.info("🔄 Reset to default prompts")
 
-    # --- Graph Setup ---
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentState)
 
-        graph.add_node("think", self._think_node)
+        graph.add_node("plan", self._plan_node)
         graph.add_node("tools", self._tools_node)
-        graph.add_node("answer", self._answer_node)
+        graph.add_node("solve", self._solve_node)
+        graph.add_node("verify", self._verify_node)
 
-        graph.set_entry_point("think")
-        graph.add_conditional_edges("think", self._should_call_tools,
-                                    {"continue": "tools", "end": "answer"})
-        graph.add_edge("tools", "answer")
-        graph.add_edge("answer", END)
+        graph.set_entry_point("plan")
+        graph.add_conditional_edges("plan", self._should_call_tools, {"tools": "tools", "solve": "solve"})
+        graph.add_edge("tools", "solve")
+        graph.add_edge("solve", "verify")
+        graph.add_edge("verify", END)
 
         return graph.compile()
 
-    # --- Helpers ---
     @staticmethod
     def _get_history_string(state: AgentState) -> str:
         return "\n".join(
@@ -132,41 +187,66 @@ class TutorAgent:
         )
 
     @staticmethod
+    def _get_conversation_history(messages: Sequence[BaseMessage]) -> List[Dict[str, str]]:
+        history: List[Dict[str, str]] = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                history.append({"role": "user", "content": msg.content})
+            else:
+                history.append({"role": "assistant", "content": msg.content})
+        return history
+
+    @staticmethod
+    def _get_last_user_message(state: AgentState) -> str:
+        for msg in reversed(state.get("messages", [])):
+            if isinstance(msg, HumanMessage):
+                return msg.content
+        return ""
+
+    @staticmethod
+    def _augment_planner_prompt(prompt: str) -> str:
+        if "ROUTE_MODEL" in prompt and "DOMAIN" in prompt:
+            return prompt
+        extra = (
+            "\nEnsure the <THINK> block ends with these metadata lines:\n"
+            "DOMAIN: math|coding|general|mixed\n"
+            "ROUTE_MODEL: mathstral|qwen-coder|generalist\n"
+            "ROUTE_REASON: <one short sentence>\n"
+            "NEED_SEARCH: yes|no\n"
+            "SEARCH_QUERY: <best query or empty>\n"
+        )
+        return prompt.rstrip() + extra
+
+    @staticmethod
     def _extract_plan(state: AgentState) -> str:
+        if state.get("plan"):
+            return state["plan"]
         for msg in reversed(state.get("messages", [])):
             if isinstance(msg, (AIMessage, SystemMessage)) and "<THINK>" in msg.content:
                 return msg.content
-        return state["messages"][-1].content if state.get("messages") else ""
+        return ""
+
+    @staticmethod
+    def _extract_tag_content(text: str, tag: str) -> Optional[str]:
+        if not text:
+            return None
+        match = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
 
     @staticmethod
     def _parse_need_search(content: str) -> bool:
-        return bool(re.search(r"NEED_SEARCH:\s*yes", content, re.IGNORECASE))
+        return bool(re.search(r"NEED_SEARCH:\s*yes", content or "", re.IGNORECASE))
 
     @staticmethod
     def _parse_search_query(content: str) -> str:
-        m = re.search(r"SEARCH_QUERY:\s*(.*)", content, re.IGNORECASE)
-        return m.group(1).strip() if m else ""
+        match = re.search(r"SEARCH_QUERY:\s*(.*)", content or "", re.IGNORECASE)
+        return match.group(1).strip() if match else ""
 
-    # --- Node Handlers ---
-    def _think_node(self, state: AgentState) -> Dict[str, Any]:
-        logger.info("🧠 Phase 1: Thinking...")
-        history = self._get_history_string(state)
-        user_message = state["messages"][-1]
-        prompt = self.think_prompt.format(chat_history=history)
-        response = self.llm.invoke([SystemMessage(content=prompt), user_message])
-        logger.info(f"📋 Plan:\n{response.content}\n")
-        return {"messages": [response]}
-
-    def _tools_node(self, state: AgentState) -> Dict[str, Any]:
-        logger.info("🔍 Running tools (MCP + search)...")
-        plan = self._extract_plan(state)
-        # Prefer MCP tools for external tasks
+    def _collect_tool_blocks(self, plan: str, query: str) -> str:
+        plan = plan or ""
         need_search = self._parse_need_search(plan)
-        query = self._parse_search_query(plan) or next(
-            (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-            ""
-        )
-        # New tool flags
         need_time = bool(re.search(r"NEED_TIME:\s*yes", plan, re.IGNORECASE))
         need_weather = bool(re.search(r"NEED_WEATHER:\s*yes", plan, re.IGNORECASE))
         timezone_match = re.search(r"TIMEZONE:\s*([^\n]+)", plan, re.IGNORECASE)
@@ -175,173 +255,568 @@ class TutorAgent:
         weather_location = weather_loc_match.group(1).strip() if weather_loc_match else None
 
         blocks: List[str] = []
-        # SEARCH via MCP (alias 'search')
+
         if need_search:
             try:
                 results = self._call_mcp_tool("search", {"query": query, "max_results": 5})
                 results_text = results if isinstance(results, str) else json.dumps(results, ensure_ascii=False)[:4000]
-            except Exception as e:
+            except Exception as exc:
                 logger.exception("❌ Search tool failed")
-                results_text = f"[Search Error] {e}"
+                results_text = f"[Search Error] {exc}"
             blocks.append(f"<SEARCH_RESULTS>\nQuery: {query}\n{results_text}\n</SEARCH_RESULTS>")
-        # MEMORY via MCP (both scopes)
+
         try:
             mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
-            blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
-        except Exception as e:
-            blocks.append(f"<MEMORY_RESULTS_ERROR>{e}</MEMORY_RESULTS_ERROR>")
-        # TIME via MCP
+            if mem:
+                blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
+        except Exception as exc:
+            blocks.append(f"<MEMORY_RESULTS_ERROR>{exc}</MEMORY_RESULTS_ERROR>")
+
         if need_time:
             try:
                 res = self._call_mcp_tool("time", {"timezone": timezone} if timezone else {})
                 blocks.append(f"<TIME_RESULT>\n{json.dumps(res, ensure_ascii=False)}\n</TIME_RESULT>")
-            except Exception as e:
-                blocks.append(f"<TIME_RESULT_ERROR>{e}</TIME_RESULT_ERROR>")
-        # WEATHER via MCP
+            except Exception as exc:
+                blocks.append(f"<TIME_RESULT_ERROR>{exc}</TIME_RESULT_ERROR>")
+
         if need_weather:
             try:
                 res = self._call_mcp_tool("weather", {"location": weather_location or query})
                 blocks.append(f"<WEATHER_RESULT>\n{json.dumps(res, ensure_ascii=False)[:4000]}\n</WEATHER_RESULT>")
-            except Exception as e:
-                blocks.append(f"<WEATHER_RESULT_ERROR>{e}</WEATHER_RESULT_ERROR>")
+            except Exception as exc:
+                blocks.append(f"<WEATHER_RESULT_ERROR>{exc}</WEATHER_RESULT_ERROR>")
 
-        if not blocks:
-            logger.info("ℹ️ No tools triggered; skipping tool node.")
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _parse_route_from_plan(plan: str) -> Tuple[Optional[str], Optional[str]]:
+        if not plan:
+            return None, None
+        route: Optional[str] = None
+        domain_token: Optional[str] = None
+
+        domain_match = re.search(r"DOMAIN:\s*([a-zA-Z]+)", plan, re.IGNORECASE)
+        if domain_match:
+            domain_raw = domain_match.group(1).lower()
+            if domain_raw.startswith("math"):
+                domain_token = "math"
+            elif domain_raw in ("coding", "programming", "code"):
+                domain_token = "code"
+            elif domain_raw == "mixed":
+                domain_token = "mixed"
+            else:
+                domain_token = "general"
+
+        route_match = re.search(r"ROUTE_MODEL:\s*([^\s\n]+)", plan, re.IGNORECASE)
+        if route_match:
+            route_raw = route_match.group(1).lower()
+            if "math" in route_raw:
+                route = "math"
+            elif "coder" in route_raw or "code" in route_raw:
+                route = "code"
+            elif "general" in route_raw or "planner" in route_raw:
+                route = "general"
+
+        if not route and domain_token:
+            if domain_token == "math":
+                route = "math"
+            elif domain_token == "code":
+                route = "code"
+            elif domain_token == "mixed":
+                route = "general"
+            else:
+                route = "general"
+
+        return route, domain_token
+
+    @staticmethod
+    def _extract_difficulty(plan: str) -> Optional[str]:
+        if not plan:
+            return None
+        m = re.search(r"difficulty\s*[:=-]\s*(easy|medium|hard)", plan, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+        m2 = re.search(r"expected_difficulty\s*[:=-]\s*(easy|medium|hard)", plan, re.IGNORECASE)
+        if m2:
+            return m2.group(1).lower()
+        # heuristic based on steps count
+        steps = re.findall(r"step", plan, re.IGNORECASE)
+        if len(steps) >= 6:
+            return "hard"
+        if len(steps) >= 3:
+            return "medium"
+        if len(steps) > 0:
+            return "easy"
+        return None
+
+    def _decide_usage(
+        self,
+        route: str,
+        difficulty: Optional[str],
+        intent_result: Optional[IntentResult],
+        plan_text: str,
+    ) -> Tuple[bool, bool, str]:
+        """Return (use_specialist, use_verifier, rationale)."""
+        if not self.enable_adaptive:
+            return True, True, "adaptive_disabled"
+        # default difficulty
+        diff = difficulty or "medium"
+        # intent influence
+        high_conf = intent_result and intent_result.confidence >= self.planner_conf_threshold
+        quick_intent = intent_result and intent_result.thinking_level == ThinkingLevel.NONE
+        rationale_parts: List[str] = []
+        # Decide specialist usage
+        use_specialist = False
+        if route in {"math", "code"}:
+            if diff in {"hard", "medium"}:
+                use_specialist = True
+                rationale_parts.append(f"route={route} diff={diff} specialist")
+            elif not high_conf:
+                use_specialist = True
+                rationale_parts.append("low_confidence_force_specialist")
+        # quick intent overrides
+        if quick_intent and diff == "easy" and high_conf:
+            use_specialist = False
+            rationale_parts.append("quick_intent_skip_specialist")
+        # Decide verifier usage
+        use_verifier = False
+        if use_specialist:
+            if route == "math" and diff in self.math_verify_levels:
+                use_verifier = True
+                rationale_parts.append("math_medium_or_hard_verify")
+            elif route == "code" and diff in self.code_verify_levels:
+                use_verifier = True
+                rationale_parts.append("code_hard_verify")
+            elif not high_conf and diff != "easy":
+                use_verifier = True
+                rationale_parts.append("low_confidence_verify")
+        # If plan explicitly requests verification keyword
+        if re.search(r"verify", plan_text, re.IGNORECASE) and use_specialist:
+            use_verifier = True
+            rationale_parts.append("plan_requests_verify")
+        if not use_specialist:
+            use_verifier = False
+        rationale = ";".join(rationale_parts) or "default"
+        return use_specialist, use_verifier, rationale
+
+    def _cache_key(self, query: str, route: str) -> str:
+        return f"{route}:{query.strip().lower()}"
+
+    def _lookup_cache(self, key: str) -> Optional[str]:
+        item = self._answer_cache.get(key)
+        if not item:
+            return None
+        ts, answer = item
+        if _time.time() - ts > self.cache_ttl_seconds:
+            self._answer_cache.pop(key, None)
+            return None
+        return answer
+
+    def _store_cache(self, key: str, answer: str) -> None:
+        if len(self._answer_cache) >= self._max_cache_size:
+            # simple eviction: remove oldest
+            oldest_key = min(self._answer_cache.items(), key=lambda kv: kv[1][0])[0]
+            self._answer_cache.pop(oldest_key, None)
+        self._answer_cache[key] = (_time.time(), answer)
+
+    @staticmethod
+    def _route_from_intent(intent_result: Optional[IntentResult]) -> Optional[str]:
+        if not intent_result:
+            return None
+        if intent_result.domain == Domain.MATHEMATICS:
+            return "math"
+        if intent_result.domain == Domain.PROGRAMMING:
+            return "code"
+        if intent_result.domain == Domain.MIXED:
+            return "general"
+        return "general"
+
+    @staticmethod
+    def _heuristic_route(query: str) -> str:
+        if not query:
+            return "general"
+        if re.search(r"\b(integral|derivative|equation|solve|limit|matrix|algebra|calculus)\b", query, re.IGNORECASE):
+            return "math"
+        if re.search(r"\b(code|program|algorithm|debug|python|javascript|function|class|loop)\b", query, re.IGNORECASE):
+            return "code"
+        if re.search(r"[=+\-*/^]", query):
+            return "math"
+        return "general"
+
+    def _determine_route(self, plan: str, intent_result: Optional[IntentResult], query: str) -> str:
+        plan_route, plan_domain = self._parse_route_from_plan(plan)
+        route = plan_route
+        if plan_domain == "mixed" and (not route or route == "general"):
+            route = self._heuristic_route(query)
+        if not route and intent_result:
+            route = self._route_from_intent(intent_result)
+        if not route:
+            route = self._heuristic_route(query)
+        if route not in {"math", "code"}:
+            route = "general"
+        logger.info("🔀 Routing decision: %s", route)
+        return route
+
+    def _select_specialist_model(self, route: str) -> Tuple[ChatOllama, str]:
+        if route == "math":
+            return self.math_llm, self.math_model_name
+        if route == "code":
+            return self.code_llm, self.code_model_name
+        return self.general_llm, self.general_model_name
+
+    def _build_specialist_prompt(self, route: str, model_name: str) -> str:
+        if route == "math":
+            return (
+                "You are the Mathstral specialist model. Use the plan and context to produce a rigorous, "
+                "step-by-step mathematical solution. Show every transformation clearly, justify reasoning, "
+                "and compute the final answer. Wrap the output inside <SPECIALIST_SOLUTION> with sections:\n"
+                "### Step-by-Step Solution\n### Final Answer\n### Verification\n"
+            )
+        if route == "code":
+            return (
+                "You are the Qwen coding specialist. Use the plan and context to craft a high-quality programming "
+                "solution. Describe the algorithm, present clean well-commented code, discuss complexity, and cover edge cases. "
+                "Wrap the output inside <SPECIALIST_SOLUTION> with sections:\n"
+                "### Approach\n### Code\n### Validation & Edge Cases\n"
+            )
+        return (
+            "You are the general tutor specialist. Provide a thorough educational answer that follows the plan, "
+            "captures key reasoning, and double-checks the result. Wrap the output inside <SPECIALIST_SOLUTION> with sections:\n"
+            "### Key Reasoning\n### Final Answer\n### Checks\n"
+        )
+
+    def _build_specialist_payload(
+        self,
+        question: str,
+        plan: str,
+        history_text: str,
+        tool_context: str,
+    ) -> str:
+        sections = [
+            f"<QUESTION>\n{question}\n</QUESTION>",
+            f"<PLAN>\n{plan.strip() or 'No plan provided'}\n</PLAN>",
+        ]
+        if tool_context:
+            sections.append(f"<SUPPORTING_CONTEXT>\n{tool_context}\n</SUPPORTING_CONTEXT>")
+        if history_text:
+            sections.append(f"<CONVERSATION_HISTORY>\n{history_text}\n</CONVERSATION_HISTORY>")
+        return "\n".join(sections)
+
+    def _build_verifier_prompt(
+        self,
+        route: str,
+        specialist_model: str,
+        style_hint: Optional[str],
+    ) -> str:
+        style_section = f"\nStyle preferences:\n{style_hint}\n" if style_hint else ""
+        return (
+            "You are Gemma3 4B acting as the final verifier. Review the specialist solution, check every step, "
+            "and correct any mistakes. Recompute any portion that is doubtful. Return the authoritative response inside "
+            "<FINAL_ANSWER> with these sections:\n"
+            "### Final Answer\n### Reasoning Summary\n### Confidence\n"
+            "Confidence must be a number between 0 and 1 inclusive."
+            f"\nSpecialist model: {specialist_model}\n"
+            f"{style_section}"
+        )
+
+    def _build_verifier_payload(
+        self,
+        question: str,
+        plan: str,
+        specialist_output: str,
+        tool_context: str,
+        specialist_model: str,
+    ) -> str:
+        sections = [
+            f"<QUESTION>\n{question}\n</QUESTION>",
+            f"<PLAN>\n{plan.strip() or 'No plan provided'}\n</PLAN>",
+            f"<SPECIALIST_SOLUTION>\n{specialist_output}\n</SPECIALIST_SOLUTION>",
+            f"<SPECIALIST_MODEL>{specialist_model}</SPECIALIST_MODEL>",
+        ]
+        if tool_context:
+            sections.append(f"<SUPPORTING_CONTEXT>\n{tool_context}\n</SUPPORTING_CONTEXT>")
+        return "\n".join(sections)
+
+    @staticmethod
+    def _sanitize_stream_token(token: str, tag: str) -> str:
+        token = re.sub(rf"<{tag}>", "", token, flags=re.IGNORECASE)
+        token = re.sub(rf"</{tag}>", "", token, flags=re.IGNORECASE)
+        return token
+
+    async def _run_specialist_stage(
+        self,
+        route: str,
+        question: str,
+        plan: str,
+        history_text: str,
+        tool_context: str,
+    ) -> Tuple[str, str, AIMessage]:
+        solver_llm, solver_model = self._select_specialist_model(route)
+        system_prompt = self._build_specialist_prompt(route, solver_model)
+        payload = self._build_specialist_payload(question, plan, history_text, tool_context)
+        response = await solver_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=payload)])
+        return response.content, solver_model, response
+
+    async def _run_verifier_stage(
+        self,
+        route: str,
+        specialist_model: str,
+        question: str,
+        plan: str,
+        specialist_output: str,
+        tool_context: str,
+        style_hint: Optional[str],
+    ) -> Tuple[str, AIMessage]:
+        system_prompt = self._build_verifier_prompt(route, specialist_model, style_hint)
+        payload = self._build_verifier_payload(question, plan, specialist_output, tool_context, specialist_model)
+        response = await self.verifier_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=payload)])
+        final_answer = self._extract_tag_content(response.content, "FINAL_ANSWER") or response.content
+        return final_answer.strip(), response
+
+    async def _plan_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("🧠 Stage 1: Planner & Router")
+        history_text = self._get_history_string(state)
+        user_message = state["messages"][-1]
+        conversation_history = self._get_conversation_history(state.get("messages", [])[:-1])
+        intent_result: Optional[IntentResult] = None
+        if self.intent_classifier:
+            try:
+                intent_result = await self.intent_classifier.classify(user_message.content, conversation_history)
+                logger.info(
+                    "🎯 Intent classified as %s (domain=%s, confidence=%.2f)",
+                    intent_result.intent.value,
+                    intent_result.domain.value,
+                    intent_result.confidence,
+                )
+            except Exception as exc:
+                logger.warning("⚠️  Intent classification failed: %s", exc)
+                intent_result = None
+        prompt_template = self.think_prompt
+        try:
+            prompt_formatted = prompt_template.format(chat_history=history_text)
+        except KeyError:
+            prompt_formatted = prompt_template
+        planner_prompt = self._augment_planner_prompt(prompt_formatted)
+        response = await self.planner_llm.ainvoke([SystemMessage(content=planner_prompt), user_message])
+        plan_text = response.content
+        route = self._determine_route(plan_text, intent_result, user_message.content)
+        return {
+            "messages": [response],
+            "plan": plan_text,
+            "route": route,
+            "intent_result": intent_result,
+        }
+
+    async def _tools_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("🔍 Stage 1.5: Tool context gathering")
+        plan = state.get("plan") or self._extract_plan(state)
+        query = self._parse_search_query(plan) or self._get_last_user_message(state)
+        tool_context = self._collect_tool_blocks(plan, query)
+        if not tool_context:
+            logger.info("ℹ️ No external tools required.")
             return {"messages": []}
+        return {"messages": [SystemMessage(content=tool_context)], "tool_context": tool_context}
 
-        return {"messages": [SystemMessage(content="\n".join(blocks))]}
+    async def _solve_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("🛠️ Stage 2: Specialist solving (graph mode)")
+        t0 = _time.time()
+        route = state.get("route", "general")
+        plan = state.get("plan", "")
+        tool_context = state.get("tool_context", "")
+        history_text = self._get_history_string(state)
+        question = self._get_last_user_message(state)
+        intent_result = state.get("intent_result")
+        difficulty = self._extract_difficulty(plan)
+        use_specialist, use_verifier, rationale = self._decide_usage(route, difficulty, intent_result, plan)
+        logger.info("📌 Decision: route=%s diff=%s specialist=%s verifier=%s rationale=%s",
+                route, difficulty or "unknown", use_specialist, use_verifier, rationale)
+        route_for_solve = route if use_specialist else "general"
+        # Cache fast path
+        cache_key = self._cache_key(question, route_for_solve)
+        cached = self._lookup_cache(cache_key)
+        if cached and not use_verifier:
+            logger.info("⚡ Cache hit for route=%s; skipping verify", route_for_solve)
+            t1 = _time.time()
+            logger.info("⏱️ Solve stage (cached) took %.0f ms", (t1 - t0) * 1000)
+            return {
+                "messages": [],
+                "specialist_output": cached,
+                "specialist_model": self.math_model_name if route_for_solve == "math" else (
+                    self.code_model_name if route_for_solve == "code" else self.general_model_name
+                ),
+                "use_verifier": False,
+                "decision_rationale": rationale,
+            }
 
-    def _answer_node(self, state: AgentState) -> Dict[str, Any]:
-        logger.info("✍️ Phase 2: Answering...")
-        history = self._get_history_string(state)
-        plan = self._extract_plan(state)
-        prompt = self.answer_prompt.format(plan=plan, chat_history=history)
+        solution_text, specialist_model, response = await self._run_specialist_stage(
+            route_for_solve, question, plan, history_text, tool_context
+        )
+        t1 = _time.time()
+        logger.info("⏱️ Solve stage took %.0f ms", (t1 - t0) * 1000)
+        return {
+            "messages": [response],
+            "specialist_output": solution_text,
+            "specialist_model": specialist_model,
+            "use_verifier": use_verifier,
+            "decision_rationale": rationale,
+        }
 
-        # streaming response here
-        print("\nTutor: ", end="", flush=True)
-        chunks: List[str] = []
-        for event in self.llm.stream([SystemMessage(content=prompt)]):
-            if hasattr(event, "content") and event.content:
-                print(event.content, end="", flush=True)
-                chunks.append(event.content)
-        print("\n" + "-" * 50)
+    async def _verify_node(self, state: AgentState) -> Dict[str, Any]:
+        logger.info("✅ Stage 3: Verification & finalization")
+        t0 = _time.time()
+        route = state.get("route", "general")
+        plan = state.get("plan", "")
+        tool_context = state.get("tool_context", "")
+        specialist_output = state.get("specialist_output", "")
+        specialist_model = state.get("specialist_model", self.general_model_name)
+        question = self._get_last_user_message(state)
+        use_verifier = state.get("use_verifier", True)
+        if not use_verifier:
+            # Pass through specialist output
+            self._store_cache(self._cache_key(question, route if route in {"math", "code"} else "general"), specialist_output)
+            t1 = _time.time()
+            logger.info("⏱️ Verify stage skipped; total %.0f ms", (t1 - t0) * 1000)
+            return {
+                "messages": [],
+                "final_answer": specialist_output,
+                "verified_answer": specialist_output,
+            }
 
-        return {"final_answer": "".join(chunks)}
+        final_answer, response = await self._run_verifier_stage(
+            route,
+            specialist_model,
+            question,
+            plan,
+            specialist_output,
+            tool_context,
+            None,
+        )
+        self._store_cache(self._cache_key(question, route if route in {"math", "code"} else "general"), final_answer)
+        t1 = _time.time()
+        logger.info("⏱️ Verify stage took %.0f ms", (t1 - t0) * 1000)
+        return {
+            "messages": [response],
+            "final_answer": final_answer,
+            "verified_answer": response.content,
+        }
 
     def _should_call_tools(self, state: AgentState) -> str:
-        last_msg = state["messages"][-1]
-        if self._parse_need_search(last_msg.content):
-            logger.info("🛠️ Tools required (per plan).")
-            return "continue"
-        logger.info("✅ No tools needed.")
-        return "end"
+        plan = state.get("plan") or self._extract_plan(state)
+        if plan and (
+            self._parse_need_search(plan)
+            or re.search(r"NEED_TIME:\s*yes", plan, re.IGNORECASE)
+            or re.search(r"NEED_WEATHER:\s*yes", plan, re.IGNORECASE)
+        ):
+            return "tools"
+        return "solve"
 
-    # --- Public Run ---
     async def run(self, query: str, history: List[BaseMessage]) -> Dict[str, Any]:
-        """Run the agent and return the final state"""
         messages = history + [HumanMessage(content=query)]
-        final_state = await self.graph.ainvoke({"messages": messages})
-        return final_state
-    
-    async def run_with_streaming(self, query: str, history: List[BaseMessage]) -> None:
-        """Run the agent with streaming output for console use"""
-        messages = history + [HumanMessage(content=query)]
-        async for event in self.graph.astream({"messages": messages}):
-            if "think" in event:
-                print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
+        return await self.graph.ainvoke({"messages": messages})
 
-    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """Yield structured streaming events for frontend consumption.
-        Event types:
-          intent_detected, thinking_start, thinking_delta, thinking_complete,
-          answer_start, answer_delta, answer_complete
-        """
-        # Build history text and conversation list for intent classification
-        history_lines = []
-        conversation_history = []
+    async def run_with_streaming(self, query: str, history: List[BaseMessage]) -> None:
+        async for event in self.stream_phases(query, history):
+            if event["type"] == "thinking_delta":
+                print(event["delta"], end="", flush=True)
+            if event["type"] == "answer_delta":
+                print(event["delta"], end="", flush=True)
+            if event["type"] == "thinking_complete":
+                print(f"\n--- Plan complete ---\n{event['thinking_content']}\n")
+            if event["type"] == "answer_complete":
+                print(f"\n--- Final Answer ---\n{event['response']}\n")
+
+    async def stream_phases(
+        self,
+        query: str,
+        history: List[BaseMessage],
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        history_lines: List[str] = []
+        conversation_history: List[Dict[str, str]] = []
         for m in history:
             role = "User" if isinstance(m, HumanMessage) else "Tutor"
             history_lines.append(f"{role}: {m.content}")
             conversation_history.append({
                 "role": "user" if isinstance(m, HumanMessage) else "assistant",
-                "content": m.content
+                "content": m.content,
             })
         history_text = "\n".join(history_lines)
 
-        # ---- PHASE 3: INTENT CLASSIFICATION ----
-        intent_result = None
-        thinking_prompt_text = self.think_prompt
+        intent_result: Optional[IntentResult] = None
+        thinking_prompt_template = self.think_prompt
         answer_prompt_text = self.answer_prompt
-        user_context = {}
+        user_context: Dict[str, Any] = {}
 
-        if self.enable_dynamic_prompts and self.intent_classifier and self.prompt_manager:
+        if self.intent_classifier:
             try:
-                logger.info("🎯 Classifying user intent...")
                 intent_result = await self.intent_classifier.classify(query, conversation_history)
-
-                # Yield intent detection event
                 yield {
                     "type": "intent_detected",
                     "intent": str(intent_result.intent),
                     "confidence": intent_result.confidence,
                     "domain": str(intent_result.domain),
-                    "thinking_level": str(intent_result.thinking_level)
+                    "thinking_level": str(intent_result.thinking_level),
                 }
-
-                # Get user context from Memori if available
-                if self.memori_engine and user_id:
-                    try:
-                        # TODO: Add method to get user context from Memori
-                        # For now, use empty context
-                        user_context = {
-                            "learning_history": [],
-                            "preferences": {}
-                        }
-                    except Exception as e:
-                        logger.warning(f"Could not fetch user context from Memori: {e}")
-
-                # Get dynamic prompts based on intent
-                thinking_prompt_text, answer_prompt_text = self.prompt_manager.get_prompts(
-                    intent_result,
-                    query,
-                    user_context
-                )
-
-                logger.info(f"✅ Using dynamic prompts for intent: {intent_result.intent.name}")
-
-            except Exception as e:
-                logger.error(f"❌ Intent classification failed: {e}")
-                logger.info("Falling back to static prompts")
+            except Exception as exc:
+                logger.warning("⚠️  Intent classification failed: %s", exc)
                 intent_result = None
 
-        # Determine if we should skip thinking phase
+        if self.enable_dynamic_prompts and self.prompt_manager and intent_result:
+            try:
+                thinking_prompt_template, answer_prompt_text = self.prompt_manager.get_prompts(
+                    intent_result,
+                    query,
+                    user_context,
+                )
+            except Exception as exc:
+                logger.warning("⚠️  Dynamic prompt generation failed: %s", exc)
+                thinking_prompt_template = self.think_prompt
+                answer_prompt_text = self.answer_prompt
+
         skip_thinking = (
-            intent_result and
-            intent_result.thinking_level == ThinkingLevel.NONE and
-            thinking_prompt_text == ""  # Dynamic prompt returned empty thinking prompt
+            intent_result
+            and intent_result.thinking_level == ThinkingLevel.NONE
+            and not thinking_prompt_template
         )
 
-        # ---- THINKING PHASE ----
-        think_prompt_text = thinking_prompt_text if isinstance(thinking_prompt_text, str) else self.think_prompt.format(chat_history=history_text)
-        system_msg = SystemMessage(content=think_prompt_text)
-        user_msg = HumanMessage(content=query)
+        plan_raw = ""
+        plan_for_specialist = ""
+        plan_display = ""
+        tool_context = ""
+        route_guess = self._route_from_intent(intent_result) or self._heuristic_route(query)
 
-        # Skip thinking phase for quick answers (ThinkingLevel.NONE)
-        think_accum = ""
         if skip_thinking:
-            logger.info("⚡ Skipping thinking phase (quick answer mode)")
+            logger.info("⚡ Skipping planner stream (quick answer mode)")
+            route = route_guess or "general"
+            model_token = "mathstral" if route == "math" else "qwen-coder" if route == "code" else "generalist"
+            plan_for_specialist = (
+                "Quick response mode. Minimal planning applied.\n"
+                f"DOMAIN: {route}\n"
+                f"ROUTE_MODEL: {model_token}\n"
+                "ROUTE_REASON: Quick answer requested by intent classifier.\n"
+                "NEED_SEARCH: no\n"
+                "SEARCH_QUERY:\n"
+            )
+            plan_display = plan_for_specialist
             yield {"type": "thinking_start"}
-            yield {"type": "thinking_complete", "thinking_content": ""}
-            plan_full = ""
+            yield {"type": "thinking_complete", "thinking_content": plan_display}
         else:
+            prompt_template = thinking_prompt_template or self.think_prompt
+            try:
+                prompt_formatted = prompt_template.format(chat_history=history_text)
+            except KeyError:
+                prompt_formatted = prompt_template
+            planner_prompt = self._augment_planner_prompt(prompt_formatted)
+            system_msg = SystemMessage(content=planner_prompt)
+            user_msg = HumanMessage(content=query)
             yield {"type": "thinking_start"}
             inside_think = False
             try:
-                async for chunk in self.llm.astream([system_msg, user_msg]):
+                async for chunk in self.planner_llm.astream([system_msg, user_msg]):
                     token = getattr(chunk, "content", "")
                     if not token:
                         continue
-                    think_accum += token
+                    plan_raw += token
                     if "<THINK>" in token:
                         inside_think = True
                         token = token.split("<THINK>", 1)[-1]
@@ -353,116 +828,122 @@ class TutorAgent:
                         continue
                     if inside_think and token:
                         yield {"type": "thinking_delta", "delta": token}
-            except Exception as e:
-                logger.exception("Thinking phase streaming failed: %s", e)
+            except Exception as exc:
+                logger.exception("Thinking phase streaming failed: %s", exc)
 
-            match = re.search(r"<THINK>(.*?)</THINK>", think_accum, re.DOTALL)
-            plan_core = match.group(1).strip() if match else think_accum.strip()
+            plan_for_specialist = self._extract_tag_content(plan_raw, "THINK") or plan_raw.strip()
+            route = self._determine_route(plan_raw, intent_result, query)
+            tool_context = self._collect_tool_blocks(plan_raw, query)
+            plan_display = plan_for_specialist
+            if tool_context:
+                plan_display = f"{plan_display}\n{tool_context}"
+            yield {"type": "thinking_complete", "thinking_content": plan_display}
 
-            # Optional tool use (expanded for MCP tools)
-            need_search = bool(re.search(r"NEED_SEARCH:\s*yes", think_accum, re.IGNORECASE))
-            need_time = bool(re.search(r"NEED_TIME:\s*yes", think_accum, re.IGNORECASE))
-            need_weather = bool(re.search(r"NEED_WEATHER:\s*yes", think_accum, re.IGNORECASE))
-            search_block = ""
-            extra_blocks: List[str] = []
-            if need_search:
-                search_query_match = re.search(r"SEARCH_QUERY:\s*(.*)", think_accum, re.IGNORECASE)
-                search_query = (search_query_match.group(1).strip() if search_query_match else query) or query
-                try:
-                    tool_res = self._call_mcp_tool("search", {"query": search_query, "max_results": 5})
-                    if not isinstance(tool_res, str):
-                        tool_res = json.dumps(tool_res, ensure_ascii=False)[:4000]
-                except Exception as e:
-                    tool_res = f"[Search Error] {e}"
-                search_block = f"\n\n<SEARCH_RESULTS>\nQuery: {search_query}\n{tool_res}\n</SEARCH_RESULTS>"
-            # memory block
-            with suppress(Exception):
-                mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
-                extra_blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
-            if need_time:
-                timezone_match = re.search(r"TIMEZONE:\s*([^\n]+)", think_accum, re.IGNORECASE)
-                timezone = timezone_match.group(1).strip() if timezone_match else None
-                with suppress(Exception):
-                    res = self._call_mcp_tool("time", {"timezone": timezone} if timezone else {})
-                    extra_blocks.append(f"<TIME_RESULT>\n{json.dumps(res, ensure_ascii=False)}\n</TIME_RESULT>")
-            if need_weather:
-                weather_loc_match = re.search(r"WEATHER_LOCATION:\s*([^\n]+)", think_accum, re.IGNORECASE)
-                weather_loc = weather_loc_match.group(1).strip() if weather_loc_match else query
-                with suppress(Exception):
-                    res = self._call_mcp_tool("weather", {"location": weather_loc})
-                    extra_blocks.append(f"<WEATHER_RESULT>\n{json.dumps(res, ensure_ascii=False)[:4000]}\n</WEATHER_RESULT>")
-            search_block += ("\n" + "\n".join(extra_blocks)) if extra_blocks else ""
-            plan_full = plan_core + search_block
-            yield {"type": "thinking_complete", "thinking_content": plan_full}
+        if not plan_for_specialist:
+            plan_for_specialist = plan_display or ""
 
-        # ---- ANSWER PHASE ----
-        # Use dynamic answer prompt if available, otherwise use static prompt
-        if answer_prompt_text and answer_prompt_text != self.answer_prompt:
-            # Dynamic prompt (doesn't need plan parameter since it's already embedded)
-            final_answer_prompt = answer_prompt_text
-        else:
-            # Static prompt (needs plan and chat_history parameters)
-            final_answer_prompt = self.answer_prompt.format(plan=plan_full, chat_history=history_text)
+        if not tool_context:
+            tool_context = ""
 
-        answer_system = SystemMessage(content=final_answer_prompt)
+        final_route = route if not skip_thinking else (route_guess or "general")
+
+        # Adaptive decisions for streaming path
+        difficulty = self._extract_difficulty(plan_for_specialist)
+        use_specialist, use_verifier, rationale = self._decide_usage(
+            final_route,
+            difficulty,
+            intent_result,
+            plan_for_specialist,
+        )
+        route_for_solve = final_route if (self.enable_stream_adaptive and use_specialist) else "general"
+
+        # Cache fast path
+        cache_key = self._cache_key(query, route_for_solve)
+        cached = self._lookup_cache(cache_key)
+        if self.enable_stream_adaptive and cached and not use_verifier:
+            yield {"type": "answer_start"}
+            yield {"type": "answer_delta", "delta": cached}
+            yield {
+                "type": "answer_complete",
+                "response": cached,
+                "thinking_content": plan_display,
+                "specialist_model": self.math_model_name if route_for_solve == "math" else (
+                    self.code_model_name if route_for_solve == "code" else self.general_model_name
+                ),
+            }
+            return
+
+        solution_text, specialist_model, _ = await self._run_specialist_stage(
+            route_for_solve,
+            query,
+            plan_for_specialist,
+            history_text,
+            tool_context,
+        )
+
+        if not (self.enable_stream_adaptive and use_verifier):
+            # Bypass verifier; stream specialist as final
+            yield {"type": "answer_start"}
+            yield {"type": "answer_delta", "delta": solution_text}
+            self._store_cache(cache_key, solution_text)
+            yield {
+                "type": "answer_complete",
+                "response": solution_text,
+                "thinking_content": plan_display,
+                "specialist_model": specialist_model,
+            }
+            return
+
+        style_hint = answer_prompt_text if answer_prompt_text != self.answer_prompt else None
+        verifier_system = SystemMessage(
+            content=self._build_verifier_prompt(route_for_solve, specialist_model, style_hint)
+        )
+        verifier_payload = self._build_verifier_payload(
+            query,
+            plan_for_specialist,
+            solution_text,
+            tool_context,
+            specialist_model,
+        )
+        verifier_human = HumanMessage(content=verifier_payload)
+
         yield {"type": "answer_start"}
         answer_accum = ""
-        inside_answer = False
         try:
-            async for chunk in self.llm.astream([answer_system]):
+            async for chunk in self.verifier_llm.astream([verifier_system, verifier_human]):
                 token = getattr(chunk, "content", "")
                 if not token:
                     continue
                 answer_accum += token
-                if "<ANSWER>" in token:
-                    inside_answer = True
-                    token = token.split("<ANSWER>", 1)[-1]
-                if "</ANSWER>" in token:
-                    before_close, _ = token.split("</ANSWER>", 1)
-                    if inside_answer and before_close:
-                        yield {"type": "answer_delta", "delta": before_close}
-                    inside_answer = False
-                    continue
-                if inside_answer and token:
-                    yield {"type": "answer_delta", "delta": token}
-        except Exception as e:
-            logger.exception("Answer phase streaming failed: %s", e)
+                cleaned = self._sanitize_stream_token(token, "FINAL_ANSWER")
+                if cleaned:
+                    yield {"type": "answer_delta", "delta": cleaned}
+        except Exception as exc:
+            logger.exception("Answer phase streaming failed: %s", exc)
 
-        ans_match = re.search(r"<ANSWER>(.*?)</ANSWER>", answer_accum, re.DOTALL)
-        final_answer = ans_match.group(1).strip() if ans_match else answer_accum.strip()
-        yield {"type": "answer_complete", "response": final_answer, "thinking_content": plan_full}
+        final_answer = self._extract_tag_content(answer_accum, "FINAL_ANSWER") or self._sanitize_stream_token(
+            answer_accum, "FINAL_ANSWER"
+        ).strip()
+        self._store_cache(cache_key, final_answer)
+        yield {
+            "type": "answer_complete",
+            "response": final_answer,
+            "thinking_content": plan_display,
+            "specialist_model": specialist_model,
+        }
 
-    # NEW: helper to call MCP tools
     def _call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if not self.mcp_client or not self.mcp_client.alive:
             raise RuntimeError("MCP client not running")
         return self.mcp_client.call_tool(name, arguments)
 
-    # MEMORI INTEGRATION METHODS
     def store_conversation_memory(
         self,
         user_id: str,
         user_message: str,
         assistant_response: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Store a conversation in Memori for long-term memory extraction.
-
-        Memori will automatically:
-        - Extract facts, preferences, and skills from the conversation
-        - Build entity relationships
-        - Make memories available for future context injection
-
-        Args:
-            user_id: User identifier
-            user_message: User's message
-            assistant_response: AI tutor's response
-            metadata: Optional metadata (topic_id, timestamp, etc.)
-
-        Returns:
-            Storage confirmation
-        """
         if not self.memori_engine:
             logger.debug("Memori not enabled, skipping memory storage")
             return {"status": "skipped", "reason": "memori_disabled"}
@@ -472,31 +953,20 @@ class TutorAgent:
                 user_id=user_id,
                 user_message=user_message,
                 assistant_response=assistant_response,
-                metadata=metadata
+                metadata=metadata,
             )
-            logger.debug(f"✅ Stored conversation in Memori for user {user_id}")
+            logger.debug("✅ Stored conversation in Memori for user %s", user_id)
             return result
-        except Exception as e:
-            logger.error(f"❌ Failed to store in Memori: {e}")
-            return {"status": "error", "error": str(e)}
+        except Exception as exc:
+            logger.error("❌ Failed to store in Memori: %s", exc)
+            return {"status": "error", "error": str(exc)}
 
     def add_user_learning_preference(
         self,
         user_id: str,
         preference: str,
-        category: str = "learning_preference"
+        category: str = "learning_preference",
     ) -> Dict[str, Any]:
-        """
-        Explicitly store a user's learning preference in Memori.
-
-        Args:
-            user_id: User identifier
-            preference: Preference description
-            category: Category of preference
-
-        Returns:
-            Storage confirmation
-        """
         if not self.memori_engine:
             return {"status": "skipped", "reason": "memori_disabled"}
 
@@ -504,13 +974,13 @@ class TutorAgent:
             result = self.memori_engine.add_user_preference(
                 user_id=user_id,
                 preference=preference,
-                category=category
+                category=category,
             )
-            logger.info(f"✅ Added learning preference for user {user_id}")
+            logger.info("✅ Added learning preference for user %s", user_id)
             return result
-        except Exception as e:
-            logger.error(f"❌ Failed to add preference: {e}")
-            return {"status": "error", "error": str(e)}
+        except Exception as exc:
+            logger.error("❌ Failed to add preference: %s", exc)
+            return {"status": "error", "error": str(exc)}
 
 
 # MCP CLIENT IMPLEMENTATION

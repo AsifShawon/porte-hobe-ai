@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 
 from dotenv import load_dotenv
 
@@ -34,6 +34,45 @@ SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
 	logger.warning("Supabase URL/KEY not set. Database features will be disabled until configured.")
+
+# ----- Adaptive Routing / Verification Settings -----
+def _get_float(name: str, default: float) -> float:
+	try:
+		val = os.getenv(name)
+		return float(val) if val is not None else default
+	except Exception:
+		return default
+
+def _get_int(name: str, default: int) -> int:
+	try:
+		val = os.getenv(name)
+		return int(val) if val is not None else default
+	except Exception:
+		return default
+
+def _get_bool(name: str, default: bool) -> bool:
+	val = os.getenv(name)
+	if val is None:
+		return default
+	return val.strip().lower() in {"1", "true", "yes", "on"}
+
+def _get_levels(name: str, default: str) -> Set[str]:
+	val = os.getenv(name, default)
+	levels = {v.strip().lower() for v in val.split(",") if v.strip()}
+	valid = {"easy", "medium", "hard"}
+	return {v for v in levels if v in valid} or {lvl for lvl in default.split(",")}
+
+# Thresholds and toggles
+ROUTE_CONFIDENCE_MIN: float = _get_float("ROUTE_CONFIDENCE_MIN", 0.6)
+VERIFY_CONFIDENCE_MAX: float = _get_float("VERIFY_CONFIDENCE_MAX", 0.7)
+CACHE_TTL_SEC: int = _get_int("CACHE_TTL_SEC", 120)
+MCP_TOOL_TIMEOUT_SEC: int = _get_int("MCP_TOOL_TIMEOUT_SEC", 20)
+ENABLE_GRAPH_ADAPTIVE: bool = _get_bool("ENABLE_GRAPH_ADAPTIVE", True)
+ENABLE_STREAM_ADAPTIVE: bool = _get_bool("ENABLE_STREAM_ADAPTIVE", True)
+
+# Verification levels per domain
+MATH_VERIFY_LEVELS: Set[str] = _get_levels("MATH_VERIFY_LEVELS", "medium,hard")
+CODE_VERIFY_LEVELS: Set[str] = _get_levels("CODE_VERIFY_LEVELS", "hard")
 
 
 def get_supabase_client() -> Optional[SupabaseClient]:
@@ -107,4 +146,12 @@ __all__ = [
 	"SUPABASE_URL",
 	"SUPABASE_KEY",
 	"SUPABASE_JWT_SECRET",
+	"ROUTE_CONFIDENCE_MIN",
+	"VERIFY_CONFIDENCE_MAX",
+	"CACHE_TTL_SEC",
+	"MCP_TOOL_TIMEOUT_SEC",
+	"ENABLE_GRAPH_ADAPTIVE",
+	"ENABLE_STREAM_ADAPTIVE",
+	"MATH_VERIFY_LEVELS",
+	"CODE_VERIFY_LEVELS",
 ]

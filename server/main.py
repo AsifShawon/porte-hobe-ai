@@ -24,6 +24,7 @@ from html_utils import sanitize_html, generate_teaching_html
 from file_router import router as file_router
 from progress_router import router as progress_router
 from topic_router import router as topic_router
+from note_router import router as note_router
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -79,6 +80,7 @@ app.add_middleware(
 app.include_router(file_router)
 app.include_router(progress_router)
 app.include_router(topic_router)
+app.include_router(note_router)
 
 # --- Request/Response Models ---
 class MessageItem(BaseModel):

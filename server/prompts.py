@@ -15,9 +15,13 @@ Instructions:
 1. Think step-by-step about how to approach this question
 2. Consider what concepts, formulas, or code examples might be needed
 3. Determine if you need to search for additional information
-4. Output your reasoning inside <THINK></THINK> tags
+4. Classify the query as mathematics, programming, or general knowledge and decide which specialist model should solve it next (mathstral for math, qwen coder for programming, base planner for other cases)
+5. Output your reasoning inside <THINK></THINK> tags
 
-At the end of your thinking, include:
+Within the <THINK> block, end with these metadata lines (exactly once):
+DOMAIN: math|coding|general|mixed
+ROUTE_MODEL: mathstral|qwen-coder|generalist
+ROUTE_REASON: <one short sentence explaining the routing choice>
 NEED_SEARCH: yes|no
 SEARCH_QUERY: <best short query or leave empty>
 
