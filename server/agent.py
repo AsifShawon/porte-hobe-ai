@@ -245,7 +245,7 @@ class TutorAgent:
         match = re.search(r"SEARCH_QUERY:\s*(.*)", content or "", re.IGNORECASE)
         return match.group(1).strip() if match else ""
 
-    def _collect_tool_blocks(self, plan: str, query: str) -> str:
+    def _collect_tool_blocks(self, plan: str, query: str, history_context: Optional[str] = None) -> str:
         plan = plan or ""
         need_search = self._parse_need_search(plan)
         need_time = bool(re.search(r"NEED_TIME:\s*yes", plan, re.IGNORECASE))
@@ -266,11 +266,39 @@ class TutorAgent:
                 results_text = f"[Search Error] {exc}"
             blocks.append(f"<SEARCH_RESULTS>\nQuery: {query}\n{results_text}\n</SEARCH_RESULTS>")
 
+        # Enhanced memory search with conversation context
         try:
-            mem = self._call_mcp_tool("memory_search", {"query": query, "k": 5, "scope": "both"})
+            # Build enhanced query from recent conversation history and plan
+            memory_query = query
+            context_terms = []
+
+            # Extract topics from plan
+            if plan and len(plan) > 50:
+                import re
+                topics = re.findall(r'(?:about|learn|explain|discuss|topic|subject)\s+([a-zA-Z0-9\s]+?)(?:\.|,|\n|$)', plan, re.IGNORECASE)
+                if topics:
+                    context_terms.extend(topics[:2])
+
+            # Extract key terms from recent conversation history
+            if history_context and len(history_context) > 50:
+                # Look for important educational keywords in history
+                important_keywords = re.findall(r'\b(programming|python|java|oop|object oriented|class|function|algorithm|calculus|algebra|geometry|data structures?|recursion|loops?|variables?|arrays?)\b', history_context, re.IGNORECASE)
+                if important_keywords:
+                    # Take most recent 2 unique keywords
+                    unique_keywords = list(dict.fromkeys(important_keywords))[-2:]
+                    context_terms.extend(unique_keywords)
+
+            # Enhance memory query with extracted context
+            if context_terms:
+                memory_query = f"{query} {' '.join(context_terms)}"
+                logger.info(f"🔍 Enhanced memory query: {memory_query[:100]}")
+
+            mem = self._call_mcp_tool("memory_search", {"query": memory_query, "k": 5, "scope": "both"})
             if mem:
                 blocks.append(f"<MEMORY_RESULTS>\n{json.dumps(mem, ensure_ascii=False)[:4000]}\n</MEMORY_RESULTS>")
+                logger.info(f"✅ Retrieved {len(mem) if isinstance(mem, list) else 1} memory results")
         except Exception as exc:
+            logger.warning(f"⚠️ Memory search failed: {exc}")
             blocks.append(f"<MEMORY_RESULTS_ERROR>{exc}</MEMORY_RESULTS_ERROR>")
 
         if need_time:
@@ -612,7 +640,8 @@ class TutorAgent:
         logger.info("🔍 Stage 1.5: Tool context gathering")
         plan = state.get("plan") or self._extract_plan(state)
         query = self._parse_search_query(plan) or self._get_last_user_message(state)
-        tool_context = self._collect_tool_blocks(plan, query)
+        history_context = self._get_history_string(state)
+        tool_context = self._collect_tool_blocks(plan, query, history_context)
         if not tool_context:
             logger.info("ℹ️ No external tools required.")
             return {"messages": []}
@@ -728,7 +757,15 @@ class TutorAgent:
 
     # removed older simple stream_phases to avoid duplicate definitions
 
-    async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_phases(
+        self,
+        query: str,
+        history: List[BaseMessage],
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        roadmap_id: Optional[str] = None,
+        topic_id: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield structured streaming events for frontend consumption.
         Event types:
           intent_detected, thinking_start, thinking_delta, thinking_complete,
@@ -753,7 +790,21 @@ class TutorAgent:
 
         if self.intent_classifier:
             try:
-                intent_result = await self.intent_classifier.classify(query, conversation_history)
+                # Build session context for better intent classification
+                session_context = {}
+                if roadmap_id:
+                    session_context["roadmap_id"] = roadmap_id
+                if topic_id:
+                    session_context["topic_id"] = topic_id
+                if conversation_id:
+                    session_context["conversation_id"] = conversation_id
+
+                # Classify with session context
+                intent_result = await self.intent_classifier.classify(
+                    query,
+                    conversation_history,
+                    session_context=session_context if session_context else None
+                )
                 yield {
                     "type": "intent_detected",
                     "intent": str(intent_result.intent),
@@ -823,10 +874,15 @@ class TutorAgent:
                 thinking_prompt_template = self.think_prompt
                 answer_prompt_text = self.answer_prompt
 
+        # CRITICAL FIX: Don't skip thinking/memory if conversation has context
+        # Even for GREETING/quick responses, we need memory if there's history
+        has_conversation_context = history and len(history) > 2
+
         skip_thinking = (
             intent_result
             and intent_result.thinking_level == ThinkingLevel.NONE
             and not thinking_prompt_template
+            and not has_conversation_context  # Don't skip if we have conversation history
         )
 
         plan_raw = ""
@@ -850,6 +906,16 @@ class TutorAgent:
             plan_display = plan_for_specialist
             yield {"type": "thinking_start"}
             yield {"type": "thinking_complete", "thinking_content": plan_display}
+
+            # CRITICAL FIX: Still collect memory context even in quick mode
+            # This ensures continuations like "yes" can access previous context
+            try:
+                tool_context = self._collect_tool_blocks(plan_for_specialist, query, history_text)
+                if tool_context:
+                    plan_display = f"{plan_display}\n{tool_context}"
+                    logger.info("✅ Retrieved memory context in quick mode")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to collect tool context in quick mode: {e}")
         else:
             prompt_template = thinking_prompt_template or self.think_prompt
             try:
@@ -883,7 +949,7 @@ class TutorAgent:
 
             plan_for_specialist = self._extract_tag_content(plan_raw, "THINK") or plan_raw.strip()
             route = self._determine_route(plan_raw, intent_result, query)
-            tool_context = self._collect_tool_blocks(plan_raw, query)
+            tool_context = self._collect_tool_blocks(plan_raw, query, history_text)
             plan_display = plan_for_specialist
             if tool_context:
                 plan_display = f"{plan_display}\n{tool_context}"

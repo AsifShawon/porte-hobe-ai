@@ -52,6 +52,7 @@ class IntentType(Enum):
 
     # Conversational intents
     GREETING = "greeting"                          # "Hello", "Hi"
+    CONTINUATION = "continuation"                  # "yes", "continue", "go on"
     FEEDBACK = "feedback"                          # "That was helpful"
     UNCLEAR = "unclear"                            # Intent cannot be determined
 
@@ -179,6 +180,13 @@ class IntentClassifier:
         IntentType.GREETING: [
             r"^(hi|hello|hey|greetings|good morning|good afternoon|good evening)",
             r"^(what's up|how are you|how's it going)"
+        ],
+        IntentType.CONTINUATION: [
+            r"^(yes|yeah|yep|yup|sure|ok|okay|alright|right)$",
+            r"^(continue|go on|next|proceed|keep going)",
+            r"^(i understand|got it|i see|understood)",
+            r"^(let's (continue|proceed|go on))",
+            r"^(more|tell me more|show me more)"
         ]
     }
 
@@ -213,7 +221,8 @@ class IntentClassifier:
     async def classify(
         self,
         query: str,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        session_context: Optional[Dict[str, Any]] = None
     ) -> IntentResult:
         """
         Classify user intent from query.
@@ -221,17 +230,25 @@ class IntentClassifier:
         Args:
             query: User's input query
             conversation_history: Previous messages for context
+            session_context: Additional context (roadmap_id, topic_id, user_level, etc.)
 
         Returns:
             IntentResult with classification and extracted entities
         """
         logger.info(f"🔍 Classifying intent for query: {query[:100]}...")
 
+        # Extract session context if provided
+        roadmap_id = session_context.get("roadmap_id") if session_context else None
+        topic_id = session_context.get("topic_id") if session_context else None
+
+        if roadmap_id or topic_id:
+            logger.info(f"🎯 Session context: roadmap={roadmap_id}, topic={topic_id}")
+
         # Quick pattern matching first (faster)
         pattern_result = self._pattern_based_classification(query)
 
         # Use LLM for confident classification
-        llm_result = await self._llm_based_classification(query, conversation_history)
+        llm_result = await self._llm_based_classification(query, conversation_history, session_context)
 
         # Combine results (LLM takes precedence if confident)
         final_result = self._merge_classifications(pattern_result, llm_result)
@@ -288,17 +305,28 @@ class IntentClassifier:
     async def _llm_based_classification(
         self,
         query: str,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        session_context: Optional[Dict[str, Any]] = None
     ) -> IntentResult:
         """LLM-based classification for nuanced understanding"""
 
-        # Build context from history
+        # Build context from history (increased from 3 to 10 for better context retention)
         history_context = ""
         if conversation_history and len(conversation_history) > 0:
-            recent = conversation_history[-3:]  # Last 3 messages
+            recent = conversation_history[-10:]  # Last 10 messages for better continuity
             history_context = "\nRecent conversation:\n" + "\n".join(
                 f"{msg['role']}: {msg['content'][:100]}" for msg in recent
             )
+
+        # Add session context if available
+        session_info = ""
+        if session_context:
+            if session_context.get("roadmap_id"):
+                session_info += f"\n\nNote: User is following a learning roadmap (ID: {session_context['roadmap_id']})"
+            if session_context.get("topic_id"):
+                session_info += f"\nCurrent topic: {session_context['topic_id']}"
+            if session_context.get("learning_context"):
+                session_info += f"\nLearning context: {session_context['learning_context']}"
 
         # Classification prompt
         classification_prompt = f"""You are an intent classifier for an AI tutor. Analyze the user's query and classify it into ONE category.
@@ -312,15 +340,18 @@ Categories:
 - requesting_explanation: User wants detailed explanation of a concept
 - practice_exercises: User wants practice problems or exercises
 - review_concept: User wants to review/revisit a concept
+- continuation: User affirming/continuing previous topic (yes, continue, next)
 - greeting: Simple greeting or chitchat
 - unclear: Cannot determine intent clearly
+
+IMPORTANT: If user says "yes", "continue", "next", etc. in response to a question, classify as CONTINUATION, not greeting.
 
 Also extract:
 - Topic: Main subject mentioned (if any)
 - Domain: programming or mathematics or general
 - User level: beginner, intermediate, or advanced (infer from query tone)
 
-Query: "{query}"{history_context}
+Query: "{query}"{history_context}{session_info}
 
 Respond in this EXACT format:
 INTENT: [category]
@@ -448,7 +479,8 @@ REASON: [brief explanation]"""
             IntentType.ASKING_QUESTION: ThinkingLevel.NONE,
             IntentType.FEEDBACK: ThinkingLevel.NONE,
 
-            # Minimal thinking
+            # Minimal thinking (CONTINUATION needs memory retrieval!)
+            IntentType.CONTINUATION: ThinkingLevel.MINIMAL,
             IntentType.LEARNING_NEW_TOPIC: ThinkingLevel.MINIMAL,
             IntentType.ROADMAP_REQUEST: ThinkingLevel.MINIMAL,
             IntentType.PRACTICE_EXERCISES: ThinkingLevel.MINIMAL,
