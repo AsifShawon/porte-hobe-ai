@@ -27,6 +27,7 @@ from html_utils import sanitize_html, generate_teaching_html
 from file_router import router as file_router
 from progress_router import router as progress_router
 from topic_router import router as topic_router
+from note_router import router as note_router
 from goal_router import router as goal_router
 from achievement_router import router as achievement_router
 from practice_router import router as practice_router
@@ -102,6 +103,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 app.include_router(file_router)
 app.include_router(progress_router)
 app.include_router(topic_router)
+app.include_router(note_router)
 app.include_router(goal_router)
 app.include_router(achievement_router)
 app.include_router(practice_router)

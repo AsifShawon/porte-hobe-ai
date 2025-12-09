@@ -6,88 +6,63 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# We use Google Generative AI with the GoogleSearch tool, mirroring web_crawler.py
-try:
-    from google import genai
-    from google.genai import types
-except Exception as e:  # pragma: no cover
-    genai = None
-    types = None
-    _IMPORT_ERROR = e
-else:
-    _IMPORT_ERROR = None
+# Tavily + LangChain integration
+try:  # pragma: no cover
+    from langchain_tavily import TavilySearch as _TavilySearch
+except Exception as _e:  # pragma: no cover
+    _TAVILY_IMPORT_ERROR = _e
+    _TavilySearch = None  # type: ignore
+else:  # pragma: no cover
+    _TAVILY_IMPORT_ERROR = None
 
 
-class GoogleWebSearchTool:
-    """Minimal Tool-like wrapper exposing an invoke({"query": str}) method.
+class TavilyWebSearchTool:
+    """Wrapper around langchain_tavily.TavilySearch with a simple .invoke API.
 
-    Uses Gemini with the GoogleSearch tool enabled to fetch current information
-    and return a concise markdown summary with links.
+    Expects `TAVILY_API_KEY` in the environment. Returns a JSON-serializable
+    dict when possible, otherwise a string. This keeps compatibility with the
+    MCP server's expectations.
     """
 
-    def __init__(self, model: str = "gemini-2.5-flash", max_results: int = 5) -> None:
-        if genai is None or types is None:
+    def __init__(self, max_results: int = 5, topic: str = "general") -> None:
+        if _TavilySearch is None:
             raise ImportError(
-                f"google-genai is required but not available: {_IMPORT_ERROR}. Install with 'pip install google-genai'"
+                f"langchain-tavily is required but not available: {_TAVILY_IMPORT_ERROR}. "
+                "Install with 'pip install langchain-tavily tavily-python'"
             )
-        api_key = os.environ.get("GEMINI_API_KEY")
+        api_key = os.environ.get("TAVILY_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set.")
-        self.client = genai.Client(api_key=api_key)
-        self.model = model
-        self.max_results = max_results
-
-    def invoke(self, input: Dict[str, Any] | str) -> str:
-        if isinstance(input, dict):
-            query = (input.get("query") or input.get("input") or "").strip()
-        else:
-            query = str(input).strip()
-        if not query:
-            raise ValueError("query is required")
-
-        contents = [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(
-                        text=(
-                            "You are a web research assistant. Use Google Search tool to find up-to-date sources.\n"
-                            f"Query: {query}\n\n"
-                            f"Return up to {self.max_results} high-quality results as markdown bullets with: title, URL, and a 1-2 sentence summary."
-                        )
-                    )
-                ],
-            )
-        ]
-        tools = [types.Tool(googleSearch=types.GoogleSearch())]
-        config = types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_budget=-1),
-            tools=tools,
+            raise ValueError("TAVILY_API_KEY environment variable not set.")
+        # langchain-tavily reads API key from env internally
+        self.tool = _TavilySearch(
+            max_results=max_results,
+            topic=topic,
+            # keep payloads compact by default
+            # include_answer=False,
+            # include_raw_content=False,
+            # include_images=False,
         )
 
-        # Non-streaming call to capture full result text
+    def invoke(self, input: Dict[str, Any] | str) -> Any:
+        if isinstance(input, dict):
+            payload = {k: v for k, v in input.items()}
+            query = (payload.get("query") or payload.get("input") or "").strip()
+        else:
+            query = str(input).strip()
+            payload = {"query": query}
+        if not query:
+            raise ValueError("query is required")
+        # Pass-through optional args supported at invocation time
         try:
-            resp = self.client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-            text = getattr(resp, "text", None)
-            if text:
-                return text
-            # Fallback to assembling from parts
-            try:
-                parts = getattr(resp, "candidates", [])[0].content.parts  # type: ignore[attr-defined]
-                return "".join(getattr(p, "text", "") for p in parts)
-            except Exception:
-                return str(resp)
-        except Exception as e:
-            return f"[Search Error] {e}"
+            res = self.tool.invoke(payload)
+        except Exception as e:  # surface concise error
+            return {"error": f"Tavily search failed: {e}"}
+        return res
 
 
-def create_search_tool() -> GoogleWebSearchTool:
-    """Create the Google-based web search tool.
+def create_search_tool() -> TavilyWebSearchTool:
+    """Create the Tavily-based web search tool.
 
-    Requires GEMINI_API_KEY in environment and google-genai installed.
+    Requires TAVILY_API_KEY and langchain-tavily installed.
     """
-    return GoogleWebSearchTool(max_results=5)
+    return TavilyWebSearchTool(max_results=5)
