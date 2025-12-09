@@ -20,6 +20,7 @@ import { useQuizzes } from '@/hooks/useQuiz'
 import type { CreateRoadmapRequest } from '@/types/roadmap'
 import type { GenerateQuizRequest } from '@/types/quiz'
 import { createSupabaseBrowserClient } from '@/lib/supabase/client'
+import { ChatToNoteButton } from '@/components/notes/ChatToNoteButton'
 
 interface Message {
   id: string
@@ -459,6 +460,16 @@ export default function ChatPage() {
   const handleGenerateRoadmap = async () => {
     if (!pendingRoadmapTrigger) return
 
+    // Add loading message
+    const loadingMsg: Message = {
+      id: 'roadmap-loading',
+      content: '🔄 Creating your personalized learning roadmap...',
+      role: 'assistant',
+      timestamp: new Date(),
+      type: 'final_answer'
+    }
+    setMessages(prev => [...prev, loadingMsg])
+
     try {
       const request: CreateRoadmapRequest = {
         user_goal: pendingRoadmapTrigger.query,
@@ -475,7 +486,12 @@ export default function ChatPage() {
         chat_session_id: conversationId || undefined
       }
 
+      console.log('Creating roadmap with request:', request)
       const roadmap = await createRoadmap(request)
+      console.log('Roadmap created:', roadmap)
+
+      // Remove loading message
+      setMessages(prev => prev.filter(m => m.id !== 'roadmap-loading'))
 
       if (roadmap) {
         // Add success message with "View Roadmap" button
@@ -492,9 +508,34 @@ You can continue our conversation here, and return to the roadmap anytime to tra
         }
         setMessages(prev => [...prev, successMsg])
         setPendingRoadmapTrigger(null)
+      } else {
+        // Show error if roadmap creation failed
+        const errorMsg: Message = {
+          id: Date.now().toString(),
+          content: '❌ Sorry, I encountered an error creating your roadmap. Please try again or check if the backend server is running.',
+          role: 'assistant',
+          timestamp: new Date(),
+          type: 'final_answer'
+        }
+        setMessages(prev => [...prev, errorMsg])
+        setPendingRoadmapTrigger(null)
       }
     } catch (error) {
       console.error('Failed to generate roadmap:', error)
+      
+      // Remove loading message
+      setMessages(prev => prev.filter(m => m.id !== 'roadmap-loading'))
+      
+      // Show error message
+      const errorMsg: Message = {
+        id: Date.now().toString(),
+        content: `❌ Error creating roadmap: ${error instanceof Error ? error.message : 'Unknown error'}. Please make sure the backend server is running.`,
+        role: 'assistant',
+        timestamp: new Date(),
+        type: 'final_answer'
+      }
+      setMessages(prev => [...prev, errorMsg])
+      setPendingRoadmapTrigger(null)
     }
   }
 
@@ -739,6 +780,13 @@ You can continue our conversation here, and return to the roadmap anytime to tra
               
               <div className="flex items-center gap-2 mt-2 text-xs opacity-70">
                 <TimeDisplay timestamp={message.timestamp} />
+                {message.role === 'assistant' && (
+                  <ChatToNoteButton
+                    messageId={message.id}
+                    messageContent={message.content}
+                    defaultTitle={`Chat Note - ${new Date().toLocaleDateString()}`}
+                  />
+                )}
               </div>
             </div>
 

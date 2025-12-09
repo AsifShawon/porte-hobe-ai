@@ -248,12 +248,22 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
                 logger.error(f"❌ CRITICAL: Failed to save user message: {e}")
                 # Still continue with streaming, but log the failure
 
-            # Stream AI response
+            # Extract roadmap and topic context from session
+            roadmap_id = None
+            topic_id = request.topic_id if hasattr(request, 'topic_id') and request.topic_id else None
+
+            # Try to get roadmap_id from session metadata
+            if session.get("roadmap_id"):
+                roadmap_id = session["roadmap_id"]
+
+            # Stream AI response with session context
             async for evt in tutor_agent.stream_phases(
                 request.message,
                 langchain_history,
                 user_id=user.get("user_id"),
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
+                roadmap_id=roadmap_id,
+                topic_id=topic_id
             ):
                 evt_type = evt.get("type")
                 
