@@ -17,7 +17,6 @@ from contextlib import suppress
 # MEMORI INTEGRATION
 from memori_engine import MemoriEngine
 # PHASE 3: INTENT CLASSIFICATION & DYNAMIC PROMPTS
-from intent_classifier import IntentClassifier, IntentResult, Domain, ThinkingLevel
 from intent_classifier import IntentClassifier, IntentResult, IntentType, ThinkingLevel, Domain
 from dynamic_prompts import DynamicPromptManager
 from config import (
@@ -727,19 +726,7 @@ class TutorAgent:
             if event["type"] == "answer_complete":
                 print(f"\n--- Final Answer ---\n{event['response']}\n")
 
-    async def stream_phases(
-        self,
-        query: str,
-        history: List[BaseMessage],
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        history_lines: List[str] = []
-        conversation_history: List[Dict[str, str]] = []
-        """Run the agent with streaming output for console use"""
-        messages = history + [HumanMessage(content=query)]
-        async for event in self.graph.astream({"messages": messages}):
-            if "think" in event:
-                print(f"\n🤔 Plan:\n{event['think']['messages'][-1].content}\n")
+    # removed older simple stream_phases to avoid duplicate definitions
 
     async def stream_phases(self, query: str, history: List[BaseMessage], user_id: Optional[str] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield structured streaming events for frontend consumption.
@@ -780,12 +767,26 @@ class TutorAgent:
 
         if self.enable_dynamic_prompts and self.prompt_manager and intent_result:
             try:
+                # Get user context from Memori if available (optional)
+                if self.memori_engine and user_id:
+                    try:
+                        user_context = {
+                            "learning_history": [],
+                            "preferences": {}
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not fetch user context from Memori: {e}")
+
+                # Get dynamic prompts based on intent
                 thinking_prompt_template, answer_prompt_text = self.prompt_manager.get_prompts(
+                    intent_result,
+                    query,
+                    user_context,
+                )
+
                 # ---- ROADMAP GENERATION TRIGGER ----
-                # Trigger roadmap generation when user expresses learning goals
                 if intent_result.intent in [IntentType.ROADMAP_REQUEST, IntentType.LEARNING_NEW_TOPIC]:
-                    if intent_result.confidence > 0.6:  # Only trigger if confident
-                        # Idempotency: suppress trigger if roadmap already exists for conversation
+                    if intent_result.confidence > 0.6:
                         should_trigger = True
                         if user_id and conversation_id:
                             try:
@@ -810,33 +811,13 @@ class TutorAgent:
                                 "domain": str(intent_result.domain),
                                 "user_level": intent_result.user_level or "beginner",
                                 "query": query,
-                                "conversation_id": conversation_id,  # Link roadmap to this conversation
+                                "conversation_id": conversation_id,
                                 "user_id": user_id
                             }
                             logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
 
                 # ---- QUIZ OFFER DISABLED ----
                 # Quizzes will be milestone-based, not triggered by practice requests
-                # Users can access quizzes through the roadmap or quiz library
-
-                # Get user context from Memori if available
-                if self.memori_engine and user_id:
-                    try:
-                        # TODO: Add method to get user context from Memori
-                        # For now, use empty context
-                        user_context = {
-                            "learning_history": [],
-                            "preferences": {}
-                        }
-                    except Exception as e:
-                        logger.warning(f"Could not fetch user context from Memori: {e}")
-
-                # Get dynamic prompts based on intent
-                thinking_prompt_text, answer_prompt_text = self.prompt_manager.get_prompts(
-                    intent_result,
-                    query,
-                    user_context,
-                )
             except Exception as exc:
                 logger.warning("⚠️  Dynamic prompt generation failed: %s", exc)
                 thinking_prompt_template = self.think_prompt
