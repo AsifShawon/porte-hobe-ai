@@ -17,9 +17,11 @@ interface ChatMessage {
   id: string
   user_id: string
   conversation_id: string | null
+  session_id?: string  // Added for new unified system
   role: 'user' | 'assistant'
   message: string
   created_at: string
+  message_type?: string  // Added for filtering system messages
 }
 
 interface ConversationGroup {
@@ -171,12 +173,15 @@ export default function ChatHistoryPage() {
   }
 
   const continueConversation = (conversation: ConversationGroup) => {
-    // Store conversation messages in sessionStorage to load in chat page
+    // Store conversation data including session_id in sessionStorage
+    const sessionId = conversation.messages[0]?.session_id  // Get session_id from first message
+    
     sessionStorage.setItem('continueChat', JSON.stringify({
       conversationId: conversation.id,
+      sessionId: sessionId,  // Pass session_id for backend continuity
       messages: conversation.messages
     }))
-    router.push('/dashboard/chat')
+    router.push(`/dashboard/chat?conversation_id=${conversation.id}${sessionId ? `&session_id=${sessionId}` : ''}`)
   }
 
   const deleteConversation = async (conversationId: string) => {

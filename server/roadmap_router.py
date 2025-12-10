@@ -506,40 +506,79 @@ async def start_learning_milestone(
             )
 
         # Get or create chat session linked to this roadmap
-        session_result = supabase.table("chat_sessions")\
-            .select("*")\
-            .eq("user_id", user_id)\
-            .eq("roadmap_id", roadmap_id)\
-            .is_("ended_at", "null")\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
-
-        if session_result.data:
-            session = session_result.data[0]
-            session_id = session["id"]
-            conversation_id = session["conversation_id"]
-            logger.info(f"Using existing session {session_id} for roadmap {roadmap_id}")
-        else:
-            # Create new session
-            new_session = supabase.table("chat_sessions").insert({
-                "user_id": user_id,
-                "roadmap_id": roadmap_id,
-                "conversation_id": str(uuid.uuid4()),
-                "title": f"Learning: {roadmap_title}",
-                "metadata": {
-                    "roadmap_title": roadmap_title,
-                    "started_from_milestone": milestone_id
-                }
-            }).execute()
-
-            if not new_session.data:
-                raise HTTPException(status_code=500, detail="Failed to create chat session")
+        # Priority: Use roadmap's conversation_id if available (roadmap created from chat)
+        session_id = None
+        conversation_id = roadmap.get("conversation_id")
+        
+        if conversation_id:
+            # Roadmap was created from a chat - find or create session with that conversation_id
+            session_result = supabase.table("chat_sessions")\
+                .select("*")\
+                .eq("conversation_id", conversation_id)\
+                .eq("user_id", user_id)\
+                .is_("ended_at", "null")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
             
-            session = new_session.data[0]
-            session_id = session["id"]
-            conversation_id = session["conversation_id"]
-            logger.info(f"Created new session {session_id} for roadmap {roadmap_id}")
+            if session_result.data:
+                session = session_result.data[0]
+                session_id = session["id"]
+                logger.info(f"Using existing session {session_id} with conversation_id {conversation_id}")
+            else:
+                # Session doesn't exist for this conversation_id - create it
+                new_session = supabase.table("chat_sessions").insert({
+                    "user_id": user_id,
+                    "roadmap_id": roadmap_id,
+                    "conversation_id": conversation_id,
+                    "title": f"Learning: {roadmap_title}",
+                    "metadata": {
+                        "roadmap_title": roadmap_title,
+                        "started_from_milestone": milestone_id
+                    }
+                }).execute()
+
+                if new_session.data:
+                    session = new_session.data[0]
+                    session_id = session["id"]
+                    logger.info(f"Created new session {session_id} for existing conversation {conversation_id}")
+        else:
+            # No conversation_id - look for existing session by roadmap_id or create new
+            session_result = supabase.table("chat_sessions")\
+                .select("*")\
+                .eq("user_id", user_id)\
+                .eq("roadmap_id", roadmap_id)\
+                .is_("ended_at", "null")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+
+            if session_result.data:
+                session = session_result.data[0]
+                session_id = session["id"]
+                conversation_id = session["conversation_id"]
+                logger.info(f"Using existing session {session_id} for roadmap {roadmap_id}")
+            else:
+                # Create completely new session
+                conversation_id = str(uuid.uuid4())
+                new_session = supabase.table("chat_sessions").insert({
+                    "user_id": user_id,
+                    "roadmap_id": roadmap_id,
+                    "conversation_id": conversation_id,
+                    "title": f"Learning: {roadmap_title}",
+                    "metadata": {
+                        "roadmap_title": roadmap_title,
+                        "started_from_milestone": milestone_id
+                    }
+                }).execute()
+
+                if new_session.data:
+                    session = new_session.data[0]
+                    session_id = session["id"]
+                    logger.info(f"Created new session {session_id} with new conversation {conversation_id}")
+        
+        if not session_id or not conversation_id:
+            raise HTTPException(status_code=500, detail="Failed to create or find chat session")
 
         # Update milestone status to in_progress
         try:

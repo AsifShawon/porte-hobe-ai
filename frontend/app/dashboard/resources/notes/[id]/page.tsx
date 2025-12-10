@@ -21,7 +21,7 @@ interface Note {
 }
 
 export default function NoteDetailPage() {
-  const { user, loading } = useAuth();
+  const { user, session, loading } = useAuth();
   const router = useRouter();
   const params = useParams();
   const noteId = params.id as string;
@@ -37,16 +37,22 @@ export default function NoteDetailPage() {
   }, [user, loading, router]);
 
   useEffect(() => {
-    if (user && noteId) {
+    if (user && session && noteId) {
       fetchNote();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, noteId]);
+  }, [user, session, noteId]);
 
   const fetchNote = async () => {
+    if (!session?.access_token) return;
+
     setIsLoading(true);
     try {
-      const response = await fetch(`/api/notes/${noteId}`);
+      const response = await fetch(`/api/notes/${noteId}`, {
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
       if (!response.ok) {
         throw new Error("Failed to fetch note");
       }
@@ -62,10 +68,15 @@ export default function NoteDetailPage() {
   };
 
   const handleSaveContent = async (content: Record<string, unknown>) => {
+    if (!session?.access_token) return;
+
     try {
       await fetch(`/api/notes/${noteId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({ content_json: content }),
       });
     } catch (error) {
@@ -74,10 +85,15 @@ export default function NoteDetailPage() {
   };
 
   const debouncedSaveTitle = useDebouncedCallback(async (newTitle: string) => {
+    if (!session?.access_token) return;
+
     try {
       await fetch(`/api/notes/${noteId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({ title: newTitle }),
       });
     } catch (error) {
@@ -91,13 +107,16 @@ export default function NoteDetailPage() {
   };
 
   const handleToggleFavorite = async () => {
-    if (!note) return;
+    if (!note || !session?.access_token) return;
     const newFavoriteState = !note.is_favorite;
 
     try {
       await fetch(`/api/notes/${noteId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({ is_favorite: newFavoriteState }),
       });
       setNote({ ...note, is_favorite: newFavoriteState });
@@ -107,11 +126,14 @@ export default function NoteDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!confirm("Are you sure you want to delete this note?")) return;
+    if (!confirm("Are you sure you want to delete this note?") || !session?.access_token) return;
 
     try {
       await fetch(`/api/notes/${noteId}`, {
         method: "DELETE",
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
       });
       router.push("/dashboard/resources/notes");
     } catch (error) {

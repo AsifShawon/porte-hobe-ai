@@ -8,6 +8,7 @@ import { ChevronDown, ChevronRight, FolderPlus, PlusCircle } from "lucide-react"
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { useAuth } from "@/components/auth-provider";
 
 interface Folder {
   id: string;
@@ -62,6 +63,7 @@ function buildFolderTree(folders: Folder[]): FolderNode[] {
 }
 
 export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSidebarProps) {
+  const { session } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -73,14 +75,17 @@ export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSid
   const activeFolder = searchParams.get("folder") ?? ROOT_ID;
 
   const handleCreateFolder = async () => {
-    if (!newFolderName.trim()) {
+    if (!newFolderName.trim() || !session?.access_token) {
       return;
     }
 
     try {
       const response = await fetch("/api/notes/folders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({ name: newFolderName.trim() }),
       });
 
@@ -97,6 +102,7 @@ export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSid
   };
 
   const rootNotesCount = useMemo(() => notes.filter((note) => !note.folder_id).length, [notes]);
+  const rootNotes = useMemo(() => notes.filter((note) => !note.folder_id), [notes]);
 
   const toggleFolder = (folderId: string) => {
     setExpanded((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
@@ -188,6 +194,18 @@ export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSid
           <span>All notes</span>
           <span className="ml-auto text-xs text-muted-foreground">{rootNotesCount}</span>
         </button>
+        
+        {/* Display root notes (notes without folders) */}
+        {rootNotes.map((note) => (
+          <Link
+            key={note.id}
+            href={`/dashboard/resources/notes/${note.id}`}
+            className="block rounded px-2 py-1 ml-6 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+          >
+            {note.title || "Untitled"}
+          </Link>
+        ))}
+        
         {folderTree.map((node) => renderFolder(node))}
       </div>
 

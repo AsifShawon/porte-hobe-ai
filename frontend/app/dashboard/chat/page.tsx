@@ -113,10 +113,15 @@ export default function ChatPage() {
   // Check for roadmap/conversation linking from URL params
   useEffect(() => {
     const conversation = searchParams.get('conversation_id')
+    const session = searchParams.get('session_id')
+    
     if (conversation && !conversationId) {
       setConversationId(conversation)
     }
-  }, [searchParams, conversationId])
+    if (session && !sessionId) {
+      setSessionId(session)
+    }
+  }, [searchParams, conversationId, sessionId])
 
   // Check for continued conversation from history (new unified tables)
   useEffect(() => {
@@ -197,9 +202,12 @@ export default function ChatPage() {
           const continueData = sessionStorage.getItem('continueChat')
           if (continueData) {
             type HistoryItem = { id?: string; message?: string; content?: string; role?: string; created_at?: string; thinking_content?: string }
-            const parsed = JSON.parse(continueData) as { conversationId?: string; messages?: HistoryItem[] }
-            const { conversationId: convId, messages: historyMessages } = parsed
+            const parsed = JSON.parse(continueData) as { conversationId?: string; sessionId?: string; messages?: HistoryItem[] }
+            const { conversationId: convId, sessionId: sessId, messages: historyMessages } = parsed
             setConversationId(convId ?? null)
+            if (sessId) {
+              setSessionId(sessId)
+            }
             const loadedMessages: Message[] = Array.isArray(historyMessages)
               ? historyMessages.map((msg: HistoryItem) => ({
                   id: msg.id || Date.now().toString(),
@@ -275,6 +283,7 @@ export default function ChatPage() {
           message: userMessage.content,
           history: messages.map(m => ({ role: m.role, content: m.content })),
           conversation_id: conversationId,  // Pass conversation_id for linking
+          session_id: sessionId,  // Pass session_id to continue existing session
           metadata: {
             roadmap_id: milestoneRoadmapId || undefined,
             topic_id: undefined
@@ -347,19 +356,9 @@ export default function ChatPage() {
                 setCurrentThinkingMessage(null)
                 setMessages(prev => [...prev, finalMsg]);
                 
-                // Save both to chat_history and memory
+                // Save to memory only (messages are already saved by SessionManager in backend)
                 (async () => {
                   try {
-                    // Save assistant message to chat_history
-                    await fetch('/api/chat/save-message', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        role: 'assistant',
-                        message: answerBuffer
-                      })
-                    })
-                    
                     // Persist memory
                     const payload = {
                       query: userMessage.content,
@@ -373,7 +372,7 @@ export default function ChatPage() {
                       body: JSON.stringify(payload)
                     })
                   } catch (err) {
-                    console.warn('Failed to persist messages', err)
+                    console.warn('Failed to persist memory', err)
                   }
                 })()
                 break

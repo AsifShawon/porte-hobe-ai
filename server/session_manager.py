@@ -31,6 +31,13 @@ class SessionManager:
         """
         Get existing session or create new one with roadmap/conversation linking
         
+        IMPROVED LOGIC:
+        1. If conversation_id provided, find ANY existing session with that conversation_id
+           - If found and not ended, return it (REUSE SAME SESSION)
+           - If found but ended, create new session
+        2. If roadmap_id provided (and no conversation_id), find active roadmap session
+        3. Otherwise create new session
+        
         Args:
             user_id: User UUID
             conversation_id: Optional conversation UUID (for backward compatibility)
@@ -42,7 +49,7 @@ class SessionManager:
             Session dict with id, user_id, conversation_id, roadmap_id, etc.
         """
         try:
-            # Try to find existing session
+            # Priority 1: Find by conversation_id (MOST IMPORTANT FOR CONTINUITY)
             if conversation_id:
                 result = self.supabase.table("chat_sessions").select("*").eq(
                     "user_id", user_id
@@ -52,16 +59,21 @@ class SessionManager:
                 
                 if result.data:
                     session = result.data[0]
-                    logger.info(f"Found existing session by conversation_id: {session['id']}")
                     
-                    # Update roadmap_id if provided and missing
-                    if roadmap_id and not session.get('roadmap_id'):
-                        self._update_session_roadmap(session['id'], roadmap_id)
-                        session['roadmap_id'] = roadmap_id
-                    
-                    return session
+                    # Check if session is still active (not ended)
+                    if not session.get('ended_at'):
+                        logger.info(f"♻️ Reusing active session: {session['id']}")
+                        
+                        # Update roadmap_id if provided and missing
+                        if roadmap_id and not session.get('roadmap_id'):
+                            self._update_session_roadmap(session['id'], roadmap_id)
+                            session['roadmap_id'] = roadmap_id
+                        
+                        return session
+                    else:
+                        logger.info(f"Session {session['id']} ended, will create new one")
             
-            # Try to find by roadmap_id
+            # Priority 2: Find active roadmap session
             if roadmap_id:
                 result = self.supabase.table("chat_sessions").select("*").eq(
                     "user_id", user_id
@@ -71,7 +83,7 @@ class SessionManager:
                 
                 if result.data:
                     session = result.data[0]
-                    logger.info(f"Found existing session by roadmap_id: {session['id']}")
+                    logger.info(f"♻️ Reusing roadmap session: {session['id']}")
                     return session
             
             # Create new session
@@ -91,7 +103,7 @@ class SessionManager:
             
             if result.data:
                 session = result.data[0]
-                logger.info(f"Created new session: {session['id']}")
+                logger.info(f"✨ Created new session: {session['id']}")
                 return session
             else:
                 raise Exception("Failed to create session: no data returned")

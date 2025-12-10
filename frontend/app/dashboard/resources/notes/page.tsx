@@ -24,7 +24,7 @@ interface NoteListItem {
 }
 
 export default function NotesPage() {
-  const { user, loading } = useAuth();
+  const { user, session, loading } = useAuth();
   const router = useRouter();
   const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -37,17 +37,24 @@ export default function NotesPage() {
   }, [user, loading, router]);
 
   useEffect(() => {
-    if (user) {
+    if (user && session) {
       fetchNotesAndFolders();
     }
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, session]);
 
   const fetchNotesAndFolders = async () => {
+    if (!session?.access_token) return;
+    
     setIsLoading(true);
     try {
+      const headers = {
+        'Authorization': `Bearer ${session.access_token}`,
+      };
+
       const [notesRes, foldersRes] = await Promise.all([
-        fetch("/api/notes"),
-        fetch("/api/notes/folders"),
+        fetch("/api/notes", { headers }),
+        fetch("/api/notes/folders", { headers }),
       ]);
 
       if (notesRes.ok) {
@@ -67,10 +74,18 @@ export default function NotesPage() {
   };
 
   const handleCreateNote = async () => {
+    if (!session?.access_token) {
+      console.error('No session token available');
+      return;
+    }
+
     try {
       const response = await fetch("/api/notes", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           title: "Untitled Note",
           content_json: { type: "doc", content: [] },
@@ -105,20 +120,36 @@ export default function NotesPage() {
         onCreateNote={handleCreateNote}
       />
       <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-        <div className="max-w-md space-y-4">
-          <div className="rounded-full bg-muted p-6 w-24 h-24 mx-auto flex items-center justify-center">
-            <StickyNote className="h-12 w-12 text-muted-foreground" />
+        {notes.length === 0 && folders.length === 0 ? (
+          <div className="max-w-md space-y-4">
+            <div className="rounded-full bg-muted p-6 w-24 h-24 mx-auto flex items-center justify-center">
+              <StickyNote className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <h2 className="text-2xl font-semibold">Your Notes</h2>
+            <p className="text-muted-foreground">
+              Create notes to capture your learning journey. Organize them with folders
+              and save content directly from chat.
+            </p>
+            <Button onClick={handleCreateNote} className="gap-2">
+              <PlusCircle className="h-4 w-4" />
+              Create your first note
+            </Button>
           </div>
-          <h2 className="text-2xl font-semibold">Your Notes</h2>
-          <p className="text-muted-foreground">
-            Create notes to capture your learning journey. Organize them with folders
-            and save content directly from chat.
-          </p>
-          <Button onClick={handleCreateNote} className="gap-2">
-            <PlusCircle className="h-4 w-4" />
-            Create your first note
-          </Button>
-        </div>
+        ) : (
+          <div className="max-w-md space-y-4">
+            <div className="rounded-full bg-muted p-6 w-24 h-24 mx-auto flex items-center justify-center">
+              <StickyNote className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <h2 className="text-2xl font-semibold">Select a Note</h2>
+            <p className="text-muted-foreground">
+              Choose a note from the sidebar to view and edit it, or create a new one.
+            </p>
+            <Button onClick={handleCreateNote} className="gap-2">
+              <PlusCircle className="h-4 w-4" />
+              Create new note
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

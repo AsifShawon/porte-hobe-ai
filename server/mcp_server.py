@@ -213,7 +213,7 @@ TOOL_DEFS = {
     },
     "solve_math": {
         "name": "solve_math",
-        "description": "Solve mathematical problems step-by-step using mathstral model. Handles equations, calculus, algebra, etc.",
+        "description": "Solve mathematical problems step-by-step using gemma3-math fine-tuned model. Handles equations, calculus, algebra, geometry, trigonometry, etc. with enhanced reasoning.",
         "input_schema": {
             "type": "object",
             "properties": {

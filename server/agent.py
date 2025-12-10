@@ -57,7 +57,7 @@ class TutorAgent:
     def __init__(
         self,
         model_name: str = "qwen2.5:3b-instruct-q5_K_M",
-        math_model: str = "mathstral:latest",
+        math_model: str = "gemma3-math:latest",
         code_model: str = "qwen2.5-coder:7b",
         verifier_model: str = "gemma3:4b",
         enable_memori: bool = True,
@@ -211,7 +211,7 @@ class TutorAgent:
         extra = (
             "\nEnsure the <THINK> block ends with these metadata lines:\n"
             "DOMAIN: math|coding|general|mixed\n"
-            "ROUTE_MODEL: mathstral|qwen-coder|generalist\n"
+            "ROUTE_MODEL: gemma3-math|qwen-coder|generalist\n"
             "ROUTE_REASON: <one short sentence>\n"
             "NEED_SEARCH: yes|no\n"
             "SEARCH_QUERY: <best query or empty>\n"
@@ -260,7 +260,17 @@ class TutorAgent:
         if need_search:
             try:
                 results = self._call_mcp_tool("search", {"query": query, "max_results": 5})
-                results_text = results if isinstance(results, str) else json.dumps(results, ensure_ascii=False)[:4000]
+                # Handle different result types safely
+                if isinstance(results, str):
+                    results_text = results
+                elif isinstance(results, (dict, list)):
+                    try:
+                        results_text = json.dumps(results, ensure_ascii=False, default=str)[:4000]
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"JSON serialization failed: {e}, converting to string")
+                        results_text = str(results)[:4000]
+                else:
+                    results_text = str(results)[:4000]
             except Exception as exc:
                 logger.exception("❌ Search tool failed")
                 results_text = f"[Search Error] {exc}"
@@ -495,9 +505,11 @@ class TutorAgent:
     def _build_specialist_prompt(self, route: str, model_name: str) -> str:
         if route == "math":
             return (
-                "You are the Mathstral specialist model. Use the plan and context to produce a rigorous, "
-                "step-by-step mathematical solution. Show every transformation clearly, justify reasoning, "
-                "and compute the final answer. Wrap the output inside <SPECIALIST_SOLUTION> with sections:\n"
+                "You are Gemma3-Math, a specialized fine-tuned mathematical reasoning model. Use the plan and context to produce a rigorous, "
+                "step-by-step mathematical solution with clear explanations. Show every transformation explicitly, justify each reasoning step, "
+                "and provide detailed working. For complex problems, break down into sub-steps and verify intermediate results. "
+                "Always double-check your calculations and provide the final answer with confidence assessment. "
+                "Wrap the output inside <SPECIALIST_SOLUTION> with sections:\n"
                 "### Step-by-Step Solution\n### Final Answer\n### Verification\n"
             )
         if route == "code":
@@ -835,8 +847,15 @@ class TutorAgent:
                 )
 
                 # ---- ROADMAP GENERATION TRIGGER ----
+                # Check if this is a milestone-based contextual prompt (don't trigger roadmap)
+                is_milestone_prompt = (
+                    "I'm learning" in query and "I want to start the topic" in query
+                ) or (
+                    "prepare me for quiz" in query.lower()
+                )
+                
                 if intent_result.intent in [IntentType.ROADMAP_REQUEST, IntentType.LEARNING_NEW_TOPIC]:
-                    if intent_result.confidence > 0.6:
+                    if intent_result.confidence > 0.6 and not is_milestone_prompt:
                         should_trigger = True
                         if user_id and conversation_id:
                             try:
@@ -865,6 +884,8 @@ class TutorAgent:
                                 "user_id": user_id
                             }
                             logger.info(f"🗺️ Triggered roadmap generation for topic: {intent_result.topic}")
+                    elif is_milestone_prompt:
+                        logger.info(f"📚 Detected milestone-based learning prompt; skipping roadmap trigger")
 
                 # ---- QUIZ OFFER DISABLED ----
                 # Quizzes will be milestone-based, not triggered by practice requests
@@ -893,7 +914,7 @@ class TutorAgent:
         if skip_thinking:
             logger.info("⚡ Skipping planner stream (quick answer mode)")
             route = route_guess or "general"
-            model_token = "mathstral" if route == "math" else "qwen-coder" if route == "code" else "generalist"
+            model_token = "gemma3-math" if route == "math" else "qwen-coder" if route == "code" else "generalist"
             plan_for_specialist = (
                 "Quick response mode. Minimal planning applied.\n"
                 f"DOMAIN: {route}\n"

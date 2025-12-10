@@ -121,6 +121,7 @@ class ChatRequest(BaseModel):
     history: Optional[List[MessageItem]] = []
     request_id: Optional[str] = None  # Optional: frontend can provide its own ID
     conversation_id: Optional[str] = None  # Conversation ID for tracking and linking to roadmaps
+    session_id: Optional[str] = None  # Session ID for continuing existing sessions
     topic_id: Optional[str] = None  # Topic context for progress tracking
     attachments: Optional[List[str]] = []  # Upload IDs to include as context
     enable_web_search: bool = False  # Enable web scraping
@@ -214,18 +215,41 @@ async def chat_endpoint(request: ChatRequest, user=Depends(get_current_user)):
         session_mgr = SessionManager(supabase)
         
         try:
-            # Get or create session with roadmap linking
-            roadmap_id = request.metadata.get("roadmap_id") if hasattr(request, "metadata") and request.metadata else None
-            topic_id = request.metadata.get("topic_id") if hasattr(request, "metadata") and request.metadata else None
+            # Priority 1: Use session_id if provided (for continuing existing sessions)
+            if request.session_id:
+                try:
+                    # Verify session belongs to user
+                    result = supabase.table("chat_sessions").select("*").eq(
+                        "id", request.session_id
+                    ).eq("user_id", user["user_id"]).single().execute()
+                    
+                    if result.data and not result.data.get('ended_at'):
+                        session = result.data
+                        session_id = session["id"]
+                        conversation_id = session.get("conversation_id") or conversation_id
+                        logger.info(f"♻️ Continuing session: {session_id}")
+                    else:
+                        # Invalid or ended session, create new
+                        logger.warning(f"Session {request.session_id} invalid or ended, creating new")
+                        request.session_id = None
+                except Exception as e:
+                    logger.warning(f"Failed to load session {request.session_id}: {e}")
+                    request.session_id = None
             
-            session = session_mgr.get_or_create_session(
-                user_id=user["user_id"],
-                conversation_id=conversation_id,
-                roadmap_id=roadmap_id,
-                topic_id=topic_id,
-                title=request.message[:50] + "..." if len(request.message) > 50 else request.message
-            )
-            session_id = session["id"]
+            # Priority 2: Get or create session by conversation_id/roadmap_id
+            if not request.session_id:
+                roadmap_id = request.metadata.get("roadmap_id") if hasattr(request, "metadata") and request.metadata else None
+                topic_id = request.metadata.get("topic_id") if hasattr(request, "metadata") and request.metadata else None
+                
+                session = session_mgr.get_or_create_session(
+                    user_id=user["user_id"],
+                    conversation_id=conversation_id,
+                    roadmap_id=roadmap_id,
+                    topic_id=topic_id,
+                    title=request.message[:50] + "..." if len(request.message) > 50 else request.message
+                )
+                session_id = session["id"]
+                conversation_id = session.get("conversation_id") or conversation_id
             
             # Convert history
             langchain_history = convert_history_to_langchain(request.history)
@@ -656,26 +680,54 @@ async def get_chat_history(
     limit: int = 50,
     conversation_id: Optional[str] = None
 ):
-    """Get chat history for the authenticated user"""
+    """Get chat history from unified chat_sessions/chat_messages tables"""
     try:
         if not supabase:
             return {"messages": []}
         
-        query = supabase.table("chat_history")\
-            .select("*")\
+        session_mgr = SessionManager(supabase)
+        
+        # Get all sessions for user (most recent first)
+        sessions_query = supabase.table("chat_sessions")\
+            .select("id, conversation_id, title, created_at, ended_at, roadmap_id")\
             .eq("user_id", user["user_id"])\
-            .order("created_at", desc=True)\
-            .limit(limit)
+            .order("created_at", desc=True)
         
         if conversation_id:
-            query = query.eq("conversation_id", conversation_id)
+            sessions_query = sessions_query.eq("conversation_id", conversation_id)
         
-        result = query.execute()
+        sessions = sessions_query.limit(limit).execute().data or []
         
-        # Reverse to get chronological order
-        messages = list(reversed(result.data)) if result.data else []
+        # For each session, get messages and format for frontend
+        result = []
+        for session in sessions:
+            messages = session_mgr.get_session_messages(
+                session_id=session["id"],
+                include_thinking=False
+            )
+            
+            # Format for frontend (legacy compatible format)
+            for msg in messages:
+                # Skip system messages (roadmap/quiz triggers) unless they have useful content
+                if msg.get("role") == "system" and msg.get("message_type") in ["roadmap_trigger", "quiz_trigger"]:
+                    continue
+                    
+                result.append({
+                    "id": msg["id"],
+                    "user_id": user["user_id"],
+                    "conversation_id": session["conversation_id"],
+                    "session_id": session["id"],
+                    "role": msg["role"],
+                    "message": msg["content"],
+                    "created_at": msg["created_at"],
+                    "message_type": msg.get("message_type"),
+                    "thinking_content": msg.get("thinking_content")
+                })
         
-        return {"messages": messages}
+        # Reverse to get chronological order (oldest first)
+        result.reverse()
+        
+        return {"messages": result}
         
     except Exception as e:
         logger.exception("Failed to fetch chat history")

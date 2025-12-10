@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 MODELS = {
     "main": "qwen2.5:3b-instruct-q5_K_M",
-    "math": "mathstral:latest",
+    "math": "gemma3-math:latest",
     "code": "qwen2.5-coder:7b",
     "verify": "gemma3:4b",
     "embedding": "embeddinggemma:latest"
@@ -30,7 +30,7 @@ MODELS = {
 
 def solve_math(problem: str, show_steps: bool = True, verify: bool = True) -> Dict[str, Any]:
     """
-    Solve mathematical problems using mathstral model.
+    Solve mathematical problems using gemma3-math fine-tuned model.
 
     Args:
         problem: Math problem to solve
@@ -40,10 +40,10 @@ def solve_math(problem: str, show_steps: bool = True, verify: bool = True) -> Di
     Returns:
         Solution with steps and optional verification
     """
-    logger.info(f"🔢 Solving math problem with mathstral: {problem[:100]}")
+    logger.info(f"🔢 Solving math problem with gemma3-math: {problem[:100]}")
 
     try:
-        # Initialize mathstral model
+        # Initialize gemma3-math model
         math_llm = ChatOllama(
             model=MODELS["math"],
             temperature=0.1,
@@ -52,18 +52,25 @@ def solve_math(problem: str, show_steps: bool = True, verify: bool = True) -> Di
 
         # Create prompt
         if show_steps:
-            system_prompt = """You are a mathematical expert. Solve the problem step-by-step.
+            system_prompt = """You are Gemma3-Math, a fine-tuned mathematical reasoning specialist. Solve the problem with rigorous step-by-step reasoning.
 
 Format your response as:
-SOLUTION: [final answer]
+SOLUTION: [final answer with units if applicable]
 STEPS:
-1. [step 1]
-2. [step 2]
+1. [Understand the problem - identify given information and what's being asked]
+2. [Choose appropriate method/formula and explain why]
+3. [Show detailed calculations with intermediate steps]
+4. [Verify the answer makes sense in context]
 ...
 
-Be precise and show all work."""
+Guidelines:
+- Show ALL transformations explicitly
+- Justify each major step with reasoning
+- Check your work and verify units/constraints
+- For complex problems, break into sub-problems
+- State any assumptions clearly"""
         else:
-            system_prompt = "You are a mathematical expert. Provide the final answer concisely."
+            system_prompt = """You are Gemma3-Math, a fine-tuned mathematical specialist. Provide the final answer with brief justification."""
 
         messages = [
             SystemMessage(content=system_prompt),

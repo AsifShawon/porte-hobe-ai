@@ -310,6 +310,25 @@ class IntentClassifier:
     ) -> IntentResult:
         """LLM-based classification for nuanced understanding"""
 
+        # Detect milestone-based contextual prompts
+        is_milestone_prompt = (
+            "I'm learning" in query and "I want to start the topic" in query
+        ) or (
+            "prepare me for quiz" in query.lower() and "milestone" in query.lower()
+        )
+        
+        # If it's a milestone prompt, classify as continuation/requesting_explanation
+        if is_milestone_prompt:
+            return IntentResult(
+                intent=IntentType.REQUESTING_EXPLANATION,
+                topic=self._extract_topic(query),
+                confidence=0.95,
+                domain=self._detect_domain(query),
+                user_level="beginner",
+                reasoning="Milestone-based learning prompt detected",
+                thinking_level=ThinkingLevel.MODERATE
+            )
+        
         # Build context from history (increased from 3 to 10 for better context retention)
         history_context = ""
         if conversation_history and len(conversation_history) > 0:

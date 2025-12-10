@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useAuth } from "@/components/auth-provider";
 
 interface ChatToNoteButtonProps {
   messageId?: string;
@@ -23,6 +24,7 @@ interface ChatToNoteButtonProps {
 }
 
 export function ChatToNoteButton({ messageId, messageContent, defaultTitle }: ChatToNoteButtonProps) {
+  const { session } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [noteTitle, setNoteTitle] = useState(defaultTitle ?? "");
   const [isSaving, setIsSaving] = useState(false);
@@ -38,7 +40,7 @@ export function ChatToNoteButton({ messageId, messageContent, defaultTitle }: Ch
   };
 
   const handleSave = async () => {
-    if (!messageContent.trim()) {
+    if (!messageContent.trim() || !session?.access_token) {
       return;
     }
     setIsSaving(true);
@@ -47,7 +49,10 @@ export function ChatToNoteButton({ messageId, messageContent, defaultTitle }: Ch
     try {
       const response = await fetch("/api/notes/inject-from-chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           chat_message_id: messageId,
           content: messageContent,
