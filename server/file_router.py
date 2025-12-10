@@ -108,7 +108,7 @@ async def upload_file(
         logger.info(f"✅ File saved locally: {safe_filename}")
         
         # Upload to Supabase Storage
-        storage_path = f"{user['id']}/{safe_filename}"
+        storage_path = f"{user['user_id']}/{safe_filename}"
         
         try:
             # Upload to Supabase Storage bucket 'uploads'
@@ -133,7 +133,7 @@ async def upload_file(
         # Create database record
         upload_data = {
             'id': file_id,
-            'user_id': user['id'],
+                'user_id': user['user_id'],
             'file_url': file_url,
             'file_name': file.filename,
             'file_type': file_type,
@@ -175,7 +175,7 @@ async def upload_file(
             # Create embedding for search
             if extracted_text:
                 await vector_agent.store_embedding(
-                    user_id=user['id'],
+                    user_id=user['user_id'],
                     content=extracted_text[:1000],
                     source_type='upload',
                     source_id=file_id,
@@ -221,7 +221,7 @@ async def list_uploads(
         # Query uploads
         result = supabase.table('uploads')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .order('created_at', desc=True)\
             .range(offset, offset + limit - 1)\
             .execute()
@@ -229,7 +229,7 @@ async def list_uploads(
         # Count total
         count_result = supabase.table('uploads')\
             .select('id', count='exact')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .execute()
         
         total = count_result.count if hasattr(count_result, 'count') else len(result.data)
@@ -261,7 +261,7 @@ async def get_upload(
         result = supabase.table('uploads')\
             .select('*')\
             .eq('id', upload_id)\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .single()\
             .execute()
         
@@ -295,7 +295,7 @@ async def process_upload(
         upload = supabase.table('uploads')\
             .select('*')\
             .eq('id', upload_id)\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .single()\
             .execute()
         
@@ -366,7 +366,7 @@ async def delete_upload(
         upload = supabase.table('uploads')\
             .select('*')\
             .eq('id', upload_id)\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .single()\
             .execute()
         
@@ -376,7 +376,7 @@ async def delete_upload(
         # Delete from Supabase Storage
         try:
             storage_path = Path(upload.data['file_url']).name
-            supabase.storage.from_('uploads').remove([f"{user['id']}/{storage_path}"])
+            supabase.storage.from_('uploads').remove([f"{user['user_id']}/{storage_path}"])
         except Exception as e:
             logger.warning(f"⚠️ Failed to delete from storage: {e}")
         

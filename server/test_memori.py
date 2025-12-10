@@ -19,13 +19,10 @@ async def test_memori_engine():
     print("MEMORI ENGINE TEST")
     print("=" * 60)
 
-    # Initialize engine
+    # Initialize engine (use sqlite for local test)
     print("\n1. Initializing Memori Engine...")
     try:
-        engine = MemoriEngine(
-            ollama_model="qwen2.5:3b-instruct-q5_K_M",
-            verbose=True
-        )
+        engine = MemoriEngine(use_postgres=False, verbose=True)
         print("✅ Memori engine initialized successfully")
     except Exception as e:
         print(f"❌ Failed to initialize: {e}")

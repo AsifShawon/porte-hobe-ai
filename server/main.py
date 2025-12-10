@@ -16,7 +16,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from agent import TutorAgent
 from auth import get_current_user
 from rate_limit import limit_user
-from config import supabase, get_supabase_client
+from config import supabase, get_supabase_client, CORS_ALLOW_ORIGINS
 from session_manager import SessionManager
 # Updated to use Memori engine instead of embedding_engine
 from memori_engine import initialize_memori_engine, get_memori_engine, store_user_memory
@@ -79,7 +79,7 @@ app = FastAPI(
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Add your frontend URLs
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -127,6 +127,8 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = False  # Enable web scraping
     enable_math: bool = False  # Enable symbolic math computation
     response_format: str = "text"  # "text" or "html"
+    # Optional metadata bag to pass roadmap/topic linkage & other context from frontend
+    metadata: Optional[Dict[str, Any]] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -391,8 +393,13 @@ class MemoryAddRequest(BaseModel):
     summary: str | None = None
     request_id: str | None = None
 
+class MemoryAddResponse(BaseModel):
+    ok: bool
+    item: Dict[str, Any] | None = None
+    engine: str | None = None
 
-@app.post("/api/memory/add")
+
+@app.post("/api/memory/add", response_model=MemoryAddResponse)
 async def memory_add(req: MemoryAddRequest, user=Depends(get_current_user)):
     """Store a memory record for the authenticated user using Memori.
 
@@ -464,7 +471,7 @@ async def chat_simple_endpoint(request: ChatRequest, user=Depends(get_current_us
                     result = supabase_client.table('uploads')\
                         .select('*')\
                         .eq('id', upload_id)\
-                        .eq('user_id', user['id'])\
+                        .eq('user_id', user['user_id'])\
                         .single()\
                         .execute()
                     
@@ -614,7 +621,7 @@ async def chat_simple_endpoint(request: ChatRequest, user=Depends(get_current_us
                 # Update progress
                 supabase_client.table('progress').update({
                     'last_activity': timestamp
-                }).eq('user_id', user['id']).eq('topic_id', request.topic_id).execute()
+                }).eq('user_id', user['user_id']).eq('topic_id', request.topic_id).execute()
                 logger.info(f"✅ Updated progress for topic {request.topic_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to update progress: {e}")
@@ -717,6 +724,7 @@ async def get_chat_history(
                     "user_id": user["user_id"],
                     "conversation_id": session["conversation_id"],
                     "session_id": session["id"],
+                    "roadmap_id": session.get("roadmap_id"),  # Include roadmap_id for history restoration
                     "role": msg["role"],
                     "message": msg["content"],
                     "created_at": msg["created_at"],

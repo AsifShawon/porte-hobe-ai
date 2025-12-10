@@ -36,7 +36,10 @@ def get_current_user(
     if not ok or not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=err or "Invalid token")
 
-    return {"user_id": user_id, "token": credentials.credentials}
+    # Return a backward-compatible shape: include both 'user_id' and 'id'
+    # Some existing routers reference user['id'] while new code uses user['user_id'].
+    # Keeping both avoids breaking existing endpoints during migration.
+    return {"user_id": user_id, "id": user_id, "token": credentials.credentials}
 
 
 __all__ = ["get_current_user"]

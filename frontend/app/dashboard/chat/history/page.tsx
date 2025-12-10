@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
-import { Bot, User, MessageSquare, Search, Trash2, Plus, ArrowLeft } from "lucide-react"
+import { Bot, User, MessageSquare, Search, Trash2, Plus, ArrowLeft, Map } from "lucide-react"
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -18,6 +18,7 @@ interface ChatMessage {
   user_id: string
   conversation_id: string | null
   session_id?: string  // Added for new unified system
+  roadmap_id?: string | null  // Linked roadmap for chat-roadmap integration
   role: 'user' | 'assistant'
   message: string
   created_at: string
@@ -30,6 +31,7 @@ interface ConversationGroup {
   lastMessage: string
   timestamp: Date
   messageCount: number
+  roadmap_id?: string | null  // Linked roadmap ID
   messages: ChatMessage[]
 }
 
@@ -95,12 +97,16 @@ export default function ChatHistoryPage() {
       // Last message
       const lastMsg = msgs[msgs.length - 1]
       
+      // Get roadmap_id from the first message that has one (all messages in a session should have the same one)
+      const roadmapId = msgs.find(m => m.roadmap_id)?.roadmap_id
+      
       groups.push({
         id: convId,
         title,
         lastMessage: lastMsg.message.substring(0, 100) + (lastMsg.message.length > 100 ? '...' : ''),
         timestamp: new Date(lastMsg.created_at),
         messageCount: msgs.length,
+        roadmap_id: roadmapId,
         messages: msgs
       })
     })
@@ -173,15 +179,17 @@ export default function ChatHistoryPage() {
   }
 
   const continueConversation = (conversation: ConversationGroup) => {
-    // Store conversation data including session_id in sessionStorage
+    // Store conversation data including session_id and roadmap_id in sessionStorage
     const sessionId = conversation.messages[0]?.session_id  // Get session_id from first message
+    const roadmapId = conversation.messages[0]?.roadmap_id  // Get linked roadmap_id
     
     sessionStorage.setItem('continueChat', JSON.stringify({
       conversationId: conversation.id,
       sessionId: sessionId,  // Pass session_id for backend continuity
+      roadmapId: roadmapId,  // Pass roadmap_id for roadmap viewer restoration
       messages: conversation.messages
     }))
-    router.push(`/dashboard/chat?conversation_id=${conversation.id}${sessionId ? `&session_id=${sessionId}` : ''}`)
+    router.push(`/dashboard/chat?conversation_id=${conversation.id}${sessionId ? `&session_id=${sessionId}` : ''}${roadmapId ? `&roadmap_id=${roadmapId}` : ''}`)
   }
 
   const deleteConversation = async (conversationId: string) => {
@@ -329,6 +337,12 @@ export default function ChatHistoryPage() {
                       <MessageSquare className="h-3 w-3" />
                       {conversation.messageCount} messages
                     </span>
+                    {conversation.roadmap_id && (
+                      <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+                        <Map className="h-3 w-3" />
+                        Roadmap linked
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}

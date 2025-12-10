@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,17 @@ from rate_limit import limit_user
 logger = logging.getLogger("note_router")
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
+
+
+def is_valid_uuid(value: Optional[str]) -> bool:
+    """Check if a string is a valid UUID."""
+    if not value:
+        return False
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -410,20 +422,45 @@ async def inject_chat_to_note(
                 }
             ).eq("id", note_id).execute()
 
-        supabase.table("note_chat_links").insert(
-            {
-                "note_id": note_id,
-                "user_id": user["user_id"],
-                "chat_message_id": request.chat_message_id,
-                "content": request.content,
-                "metadata": request.metadata or {},
-            }
-        ).execute()
+        # Validate chat_message_id before inserting into note_chat_links
+        # The frontend may pass a timestamp-based ID that isn't a valid UUID
+        valid_chat_message_id = request.chat_message_id if is_valid_uuid(request.chat_message_id) else None
+        
+        # Create the link record (chat_message_id is optional)
+        link_data = {
+            "note_id": note_id,
+            "user_id": user["user_id"],
+            "content": request.content,
+            "metadata": request.metadata or {},
+        }
+        
+        # Only include chat_message_id if it's a valid UUID that exists in chat_messages
+        if valid_chat_message_id:
+            # Verify the message exists in chat_messages table
+            try:
+                msg_check = supabase.table("chat_messages").select("id").eq("id", valid_chat_message_id).limit(1).execute()
+                if msg_check.data and len(msg_check.data) > 0:
+                    link_data["chat_message_id"] = valid_chat_message_id
+            except Exception as e:
+                logger.debug(f"Chat message verification failed: {e}")
+        
+        supabase.table("note_chat_links").insert(link_data).execute()
 
-        if request.chat_message_id:
-            supabase.table("chat_history").update(
-                {"saved_to_note": True, "note_id": note_id}
-            ).eq("id", request.chat_message_id).execute()
+        # Update the chat_messages table (not chat_history) to mark as saved
+        if valid_chat_message_id:
+            try:
+                # Try chat_messages first (new schema)
+                supabase.table("chat_messages").update(
+                    {"metadata": {"saved_to_note": True, "note_id": note_id}}
+                ).eq("id", valid_chat_message_id).execute()
+            except Exception:
+                # Fallback to legacy chat_history table
+                try:
+                    supabase.table("chat_history").update(
+                        {"saved_to_note": True, "note_id": note_id}
+                    ).eq("id", valid_chat_message_id).execute()
+                except Exception as e:
+                    logger.debug(f"Could not update chat message saved status: {e}")
 
         return {"message": "Content added to note", "note_id": note_id}
     except HTTPException:

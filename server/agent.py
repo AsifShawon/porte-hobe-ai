@@ -28,6 +28,7 @@ from config import (
     ENABLE_STREAM_ADAPTIVE,
     MATH_VERIFY_LEVELS,
     CODE_VERIFY_LEVELS,
+    MEMORI_ENABLE_INTERCEPT,
 )
 
 # --- Logging Setup ---
@@ -105,6 +106,24 @@ class TutorAgent:
             except Exception as exc:
                 logger.warning("⚠️  Failed to initialize Memori: %s", exc)
                 logger.info("Continuing without Memori integration")
+
+        # Optionally register LLM clients with Memori for automatic memory interception
+        if self.memori_engine and self.memori_engine.is_initialized and MEMORI_ENABLE_INTERCEPT:
+            try:
+                for client in (
+                    self.planner_llm,
+                    self.math_llm,
+                    self.code_llm,
+                    self.general_llm,
+                    self.verifier_llm,
+                ):
+                    try:
+                        self.memori_engine.register_client(client)
+                    except Exception as e:
+                        logger.debug("Memori register skipped for client: %s", e)
+                logger.info("🧠 Memori interception enabled for LLM clients")
+            except Exception as e:
+                logger.warning("⚠️  Could not enable Memori interception: %s", e)
 
         self.intent_classifier: Optional[IntentClassifier] = None
         try:

@@ -21,6 +21,7 @@ import type { CreateRoadmapRequest } from '@/types/roadmap'
 import type { GenerateQuizRequest } from '@/types/quiz'
 import { createSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ChatToNoteButton } from '@/components/notes/ChatToNoteButton'
+import { ChatRoadmapViewer } from '@/components/chat/ChatRoadmapViewer'
 
 interface Message {
   id: string
@@ -97,6 +98,7 @@ export default function ChatPage() {
   // Roadmap and Quiz state
   const [pendingRoadmapTrigger, setPendingRoadmapTrigger] = useState<RoadmapTrigger | null>(null)
   const [pendingQuizOffer, setPendingQuizOffer] = useState<QuizOffer | null>(null)
+  const [linkedRoadmapId, setLinkedRoadmapId] = useState<string | null>(null) // Roadmap created in this chat
   const { createRoadmap } = useRoadmaps(undefined, { enabled: false })
   const { generateQuiz } = useQuizzes(undefined, { enabled: false })
   // Milestone context from query params
@@ -114,6 +116,7 @@ export default function ChatPage() {
   useEffect(() => {
     const conversation = searchParams.get('conversation_id')
     const session = searchParams.get('session_id')
+    const roadmapFromUrl = searchParams.get('roadmap_id') || searchParams.get('roadmap')
     
     if (conversation && !conversationId) {
       setConversationId(conversation)
@@ -121,7 +124,11 @@ export default function ChatPage() {
     if (session && !sessionId) {
       setSessionId(session)
     }
-  }, [searchParams, conversationId, sessionId])
+    // Set the linked roadmap from URL if not already set
+    if (roadmapFromUrl && !linkedRoadmapId) {
+      setLinkedRoadmapId(roadmapFromUrl)
+    }
+  }, [searchParams, conversationId, sessionId, linkedRoadmapId])
 
   // Check for continued conversation from history (new unified tables)
   useEffect(() => {
@@ -131,15 +138,21 @@ export default function ChatPage() {
         if (conv) {
           const supabase = createSupabaseBrowserClient()
 
-          // Find session by legacy conversation_id
+          // Find session by legacy conversation_id - also fetch roadmap_id
           const { data: sessionRows, error: sessionErr } = await supabase
             .from('chat_sessions')
-            .select('id')
+            .select('id, roadmap_id')
             .eq('conversation_id', conv)
             .limit(1)
 
           if (!sessionErr && sessionRows && sessionRows.length > 0) {
             const sessionId = sessionRows[0].id
+            const sessionRoadmapId = sessionRows[0].roadmap_id
+            
+            // Restore the linked roadmap if one was created in this chat
+            if (sessionRoadmapId && !linkedRoadmapId) {
+              setLinkedRoadmapId(sessionRoadmapId)
+            }
             const { data: msgs, error: msgsErr } = await supabase
               .from('chat_messages')
               .select('id, role, content, thinking_content, metadata, created_at, message_type')
@@ -202,11 +215,29 @@ export default function ChatPage() {
           const continueData = sessionStorage.getItem('continueChat')
           if (continueData) {
             type HistoryItem = { id?: string; message?: string; content?: string; role?: string; created_at?: string; thinking_content?: string }
-            const parsed = JSON.parse(continueData) as { conversationId?: string; sessionId?: string; messages?: HistoryItem[] }
-            const { conversationId: convId, sessionId: sessId, messages: historyMessages } = parsed
+            const parsed = JSON.parse(continueData) as { conversationId?: string; sessionId?: string; roadmapId?: string; messages?: HistoryItem[] }
+            const { conversationId: convId, sessionId: sessId, roadmapId: storedRoadmapId, messages: historyMessages } = parsed
             setConversationId(convId ?? null)
             if (sessId) {
               setSessionId(sessId)
+              
+              // Fetch roadmap_id from chat_sessions if not in storage
+              if (!storedRoadmapId) {
+                const supabase = createSupabaseBrowserClient()
+                const { data: sessionData } = await supabase
+                  .from('chat_sessions')
+                  .select('roadmap_id')
+                  .eq('id', sessId)
+                  .single()
+                
+                if (sessionData?.roadmap_id && !linkedRoadmapId) {
+                  setLinkedRoadmapId(sessionData.roadmap_id)
+                }
+              }
+            }
+            // Restore roadmap from storage if available
+            if (storedRoadmapId && !linkedRoadmapId) {
+              setLinkedRoadmapId(storedRoadmapId)
             }
             const loadedMessages: Message[] = Array.isArray(historyMessages)
               ? historyMessages.map((msg: HistoryItem) => ({
@@ -227,7 +258,7 @@ export default function ChatPage() {
       }
     }
     loadHistory()
-  }, [searchParams, conversationId])
+  }, [searchParams, conversationId, linkedRoadmapId])
 
   const toggleThinking = (messageId: string) => {
     setOpenThinking(prev => ({
@@ -493,14 +524,26 @@ export default function ChatPage() {
       setMessages(prev => prev.filter(m => m.id !== 'roadmap-loading'))
 
       if (roadmap) {
+        // Link this roadmap to the chat for the floating viewer
+        setLinkedRoadmapId(roadmap.id)
+        
+        // Persist the roadmap_id to chat_sessions so it loads when reopening from history
+        if (sessionId) {
+          const supabase = createSupabaseBrowserClient()
+          await supabase
+            .from('chat_sessions')
+            .update({ roadmap_id: roadmap.id })
+            .eq('id', sessionId)
+        }
+        
         // Add success message with "View Roadmap" button
         const successMsg: Message = {
           id: Date.now().toString(),
           content: `✅ I've created a personalized learning roadmap for **"${roadmap.title}"**!
 
-[📚 View Roadmap](/dashboard/progress?roadmap=${roadmap.id})
+You can see your roadmap using the 🗺️ button on the right, or [📚 View Full Roadmap](/dashboard/progress?roadmap=${roadmap.id}).
 
-You can continue our conversation here, and return to the roadmap anytime to track your progress.`,
+Continue our conversation here while tracking your progress!`,
           role: 'assistant',
           timestamp: new Date(),
           type: 'final_answer'
@@ -988,6 +1031,27 @@ You can continue our conversation here, and return to the roadmap anytime to tra
           </p>
         </div>
       </div>
+
+      {/* Floating Roadmap Viewer Button */}
+      <ChatRoadmapViewer
+        roadmapId={linkedRoadmapId || milestoneRoadmapId}
+        conversationId={conversationId}
+        onMilestoneStart={(phaseId, milestoneId) => {
+          console.log('Milestone started:', phaseId, milestoneId)
+        }}
+        onMilestoneComplete={(phaseId, milestoneId, quizPassed) => {
+          console.log('Milestone completed:', phaseId, milestoneId, 'Quiz passed:', quizPassed)
+          // Add a message to chat about completion
+          const completionMsg: Message = {
+            id: Date.now().toString(),
+            content: `✅ Great work! You've completed a milestone${quizPassed !== undefined ? (quizPassed ? ' and passed the quiz!' : ' - keep practicing!') : '!'}`,
+            role: 'assistant',
+            timestamp: new Date(),
+            type: 'final_answer'
+          }
+          setMessages(prev => [...prev, completionMsg])
+        }}
+      />
     </div>
   )
 }

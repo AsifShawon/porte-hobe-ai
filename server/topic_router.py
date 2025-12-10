@@ -91,7 +91,7 @@ async def get_all_topics(
         # Get user progress for all topics
         progress_result = supabase.table('progress')\
             .select('topic_id, status, completed_lessons, total_lessons')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .execute()
         
         progress_map = {p['topic_id']: p for p in progress_result.data}
@@ -168,7 +168,7 @@ async def get_topic_detail(
         # Get user progress
         progress_result = supabase.table('progress')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', topic_id)\
             .execute()
         
@@ -181,7 +181,7 @@ async def get_topic_detail(
         if prerequisites:
             progress_all = supabase.table('progress')\
                 .select('topic_id, status')\
-                .eq('user_id', user['id'])\
+                .eq('user_id', user['user_id'])\
                 .in_('topic_id', prerequisites)\
                 .execute()
             
@@ -244,7 +244,7 @@ async def start_topic(
         if prerequisites:
             progress_all = supabase.table('progress')\
                 .select('topic_id, status')\
-                .eq('user_id', user['id'])\
+                .eq('user_id', user['user_id'])\
                 .in_('topic_id', prerequisites)\
                 .execute()
             
@@ -260,14 +260,14 @@ async def start_topic(
         # Check existing progress
         existing_progress = supabase.table('progress')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', topic_id)\
             .execute()
         
         if not existing_progress.data:
             # Create new progress
             new_progress = {
-                'user_id': user['id'],
+                'user_id': user['user_id'],
                 'topic_id': topic_id,
                 'score': 0.0,
                 'completed_lessons': 0,
@@ -285,7 +285,7 @@ async def start_topic(
         
         # Create chat session
         session = supabase.table('chat_sessions').insert({
-            'user_id': user['id'],
+            'user_id': user['user_id'],
             'topic_id': topic_id,
             'title': f"Learning {topic.data['title']}",
             'metadata': {
@@ -337,7 +337,7 @@ async def complete_topic(
         # Get progress
         progress = supabase.table('progress')\
             .select('*')\
-            .eq('user_id', user['id'])\
+            .eq('user_id', user['user_id'])\
             .eq('topic_id', topic_id)\
             .execute()
         
@@ -363,7 +363,7 @@ async def complete_topic(
             'last_activity': datetime.utcnow().isoformat()
         }).eq('id', progress_data['id']).execute()
         
-        logger.info(f"✅ Completed topic {topic_id} for user {user['id']}")
+        logger.info(f"✅ Completed topic {topic_id} for user {user['user_id']}")
         
         return {
             "message": "Congratulations! Topic completed successfully! 🎉",

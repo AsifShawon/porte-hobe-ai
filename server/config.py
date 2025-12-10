@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Optional, Tuple, Set
+from typing import Optional, Tuple, Set, List
 
 from dotenv import load_dotenv
 
@@ -62,6 +62,10 @@ def _get_levels(name: str, default: str) -> Set[str]:
 	valid = {"easy", "medium", "hard"}
 	return {v for v in levels if v in valid} or {lvl for lvl in default.split(",")}
 
+def _get_list(name: str, default_csv: str) -> List[str]:
+	val = os.getenv(name, default_csv)
+	return [item.strip() for item in val.split(",") if item.strip()]
+
 # Thresholds and toggles
 ROUTE_CONFIDENCE_MIN: float = _get_float("ROUTE_CONFIDENCE_MIN", 0.6)
 VERIFY_CONFIDENCE_MAX: float = _get_float("VERIFY_CONFIDENCE_MAX", 0.7)
@@ -73,6 +77,15 @@ ENABLE_STREAM_ADAPTIVE: bool = _get_bool("ENABLE_STREAM_ADAPTIVE", True)
 # Verification levels per domain
 MATH_VERIFY_LEVELS: Set[str] = _get_levels("MATH_VERIFY_LEVELS", "medium,hard")
 CODE_VERIFY_LEVELS: Set[str] = _get_levels("CODE_VERIFY_LEVELS", "hard")
+
+# Memori LLM interception toggle
+MEMORI_ENABLE_INTERCEPT: bool = _get_bool("MEMORI_ENABLE_INTERCEPT", False)
+
+# CORS origins (comma-separated)
+CORS_ALLOW_ORIGINS: List[str] = _get_list(
+	"CORS_ALLOW_ORIGINS",
+	"http://localhost:3000,http://127.0.0.1:3000"
+)
 
 
 def get_supabase_client() -> Optional[SupabaseClient]:
@@ -154,4 +167,6 @@ __all__ = [
 	"ENABLE_STREAM_ADAPTIVE",
 	"MATH_VERIFY_LEVELS",
 	"CODE_VERIFY_LEVELS",
+    "MEMORI_ENABLE_INTERCEPT",
+    "CORS_ALLOW_ORIGINS",
 ]

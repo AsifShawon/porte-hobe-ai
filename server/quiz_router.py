@@ -66,7 +66,7 @@ async def generate_quiz(
     Generate a new quiz based on topics and conversation context
     """
     try:
-        user_id = user.get("sub")
+        user_id = user.get("user_id")
         logger.info(f"Generating quiz for user {user_id} on topics: {request.topics}")
 
         # Generate quiz using AI
@@ -134,7 +134,7 @@ async def get_user_quizzes(
     Get all quizzes for the current user (quiz library)
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -200,7 +200,7 @@ async def get_quiz(
     Get a specific quiz (without showing correct answers)
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -258,7 +258,7 @@ async def start_quiz_attempt(
     Start a new quiz attempt
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -338,7 +338,7 @@ async def submit_quiz_answer(
     Submit an answer for grading and update attempt
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -434,7 +434,7 @@ async def complete_quiz_attempt(
     Complete a quiz attempt and generate final results
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -550,7 +550,7 @@ async def get_attempt_details(
     Get detailed results of a quiz attempt
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -598,7 +598,7 @@ async def get_quiz_statistics(user=Depends(get_current_user)):
     Get overall quiz statistics for the user
     """
     try:
-        user_id = user.get("sub") if user else None
+        user_id = user.get("user_id") if user else None
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
