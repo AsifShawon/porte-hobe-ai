@@ -50,5 +50,5 @@ numpy>=1.24.0
 pytest>=8.0.0
 mcp>=1.0.0
 
-# Memory Management
-memorisdk>=2.3.0
+# Memory Management (Memori v3)
+memori>=3.0.0

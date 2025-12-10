@@ -39,6 +39,23 @@ else:
     SEARCH_INIT_ERROR = None
 
 
+def _make_json_serializable(obj: Any) -> Any:
+    """Recursively convert objects to JSON-serializable types."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_serializable(item) for item in obj]
+    if isinstance(obj, dict):
+        return {str(k): _make_json_serializable(v) for k, v in obj.items()}
+    # Handle objects with __dict__ or convert to string
+    if hasattr(obj, '__dict__'):
+        return _make_json_serializable(vars(obj))
+    # Fallback: convert to string
+    return str(obj)
+
+
 def web_search(query: str, max_results: int | None = None) -> Dict[str, Any]:
     if not query:
         raise ValueError("query required")
@@ -47,14 +64,23 @@ def web_search(query: str, max_results: int | None = None) -> Dict[str, Any]:
     payload = {"query": query}
     if max_results:
         payload["max_results"] = max_results
-    res = _SEARCH_TOOL.invoke(payload)
-    print(f"web_search results: {res}")
+    try:
+        res = _SEARCH_TOOL.invoke(payload)
+    except Exception as e:
+        return {"error": f"Search failed: {str(e)}", "results": []}
+    
+    # Ensure result is JSON-serializable
+    try:
+        serializable_res = _make_json_serializable(res)
+    except Exception as e:
+        return {"error": f"Result serialization failed: {str(e)}", "results": []}
+    
     # TavilySearch may return list/dict; normalize
-    if isinstance(res, (list, tuple)):
-        return {"results": res}
-    if isinstance(res, dict):
-        return res
-    return {"results": str(res)}
+    if isinstance(serializable_res, (list, tuple)):
+        return {"results": serializable_res}
+    if isinstance(serializable_res, dict):
+        return serializable_res
+    return {"results": str(serializable_res)}
 
 
 def current_time(timezone: str | None = None) -> Dict[str, Any]:

@@ -135,17 +135,29 @@ async def generate_roadmap(
         if not chat_session_id and request.user_context:
             chat_session_id = request.user_context.get("chat_session_id")
 
-        # Verify chat_session_id exists; if not, drop it to satisfy FK
+        # Verify chat_session_id exists; if not, try to find/create one via conversation_id
         if chat_session_id:
             try:
                 chat_check = supabase.table("chat_sessions").select("id").eq("id", chat_session_id).single().execute()
                 if not chat_check.data:
-                    logger.warning(f"chat_session_id '{chat_session_id}' not found; omitting to satisfy FK")
+                    logger.warning(f"chat_session_id '{chat_session_id}' not found; attempting lookup by conversation_id")
                     chat_session_id = None
             except Exception:
-                # If validation query fails, be safe and omit chat_session_id
-                logger.warning("Failed to validate chat_session_id; omitting to avoid FK violation")
+                # If validation query fails, be safe and try fallback
+                logger.debug("chat_session_id validation query failed; attempting fallback")
                 chat_session_id = None
+        
+        # Fallback: Try to find session by conversation_id
+        if not chat_session_id and conversation_id:
+            try:
+                session_lookup = supabase.table("chat_sessions").select("id").eq(
+                    "conversation_id", conversation_id
+                ).eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+                if session_lookup.data:
+                    chat_session_id = session_lookup.data[0]["id"]
+                    logger.info(f"Found chat_session_id '{chat_session_id}' via conversation_id lookup")
+            except Exception as e:
+                logger.debug(f"conversation_id session lookup failed: {e}")
 
         roadmap_record = {
             "user_id": user_id,

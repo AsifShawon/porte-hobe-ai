@@ -482,7 +482,7 @@ export default function ChatPage() {
           focus_areas: pendingRoadmapTrigger.topic ? [pendingRoadmapTrigger.topic] : []
         },
         conversation_id: pendingRoadmapTrigger.conversation_id || conversationId || undefined,
-        chat_session_id: conversationId || undefined
+        chat_session_id: sessionId || undefined
       }
 
       console.log('Creating roadmap with request:', request)

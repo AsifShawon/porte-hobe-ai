@@ -100,7 +100,7 @@ class TutorAgent:
         self.memori_engine = None
         if enable_memori:
             try:
-                self.memori_engine = MemoriEngine(ollama_model=self.planner_model_name, verbose=False)
+                self.memori_engine = MemoriEngine(use_postgres=True, verbose=False)
                 logger.info("✅ Memori long-term memory enabled")
             except Exception as exc:
                 logger.warning("⚠️  Failed to initialize Memori: %s", exc)
@@ -264,15 +264,23 @@ class TutorAgent:
                 if isinstance(results, str):
                     results_text = results
                 elif isinstance(results, (dict, list)):
-                    try:
-                        results_text = json.dumps(results, ensure_ascii=False, default=str)[:4000]
-                    except (TypeError, ValueError) as e:
-                        logger.warning(f"JSON serialization failed: {e}, converting to string")
-                        results_text = str(results)[:4000]
+                    # Check for error response from search
+                    if isinstance(results, dict) and results.get("error"):
+                        results_text = f"[Search Warning] {results.get('error')}"
+                        logger.warning(f"Search returned error: {results.get('error')}")
+                    else:
+                        try:
+                            results_text = json.dumps(results, ensure_ascii=False, default=str)[:4000]
+                        except (TypeError, ValueError) as e:
+                            logger.warning(f"JSON serialization failed: {e}, converting to string")
+                            results_text = str(results)[:4000]
                 else:
                     results_text = str(results)[:4000]
+            except (RuntimeError, TimeoutError) as exc:
+                logger.warning(f"⚠️ Search tool error: {exc}")
+                results_text = f"[Search Unavailable] {exc}"
             except Exception as exc:
-                logger.exception("❌ Search tool failed")
+                logger.exception("❌ Search tool failed unexpectedly")
                 results_text = f"[Search Error] {exc}"
             blocks.append(f"<SEARCH_RESULTS>\nQuery: {query}\n{results_text}\n</SEARCH_RESULTS>")
 
@@ -830,12 +838,14 @@ class TutorAgent:
         if self.enable_dynamic_prompts and self.prompt_manager and intent_result:
             try:
                 # Get user context from Memori if available (optional)
-                if self.memori_engine and user_id:
+                user_context = {"learning_history": [], "preferences": {}}
+                if self.memori_engine and self.memori_engine.is_initialized and user_id:
                     try:
-                        user_context = {
-                            "learning_history": [],
-                            "preferences": {}
-                        }
+                        # Use Memori v3 recall for relevant memories
+                        self.memori_engine.set_attribution(user_id)
+                        memories = self.memori_engine.recall(query, limit=3)
+                        if memories:
+                            user_context["memories"] = memories
                     except Exception as e:
                         logger.warning(f"Could not fetch user context from Memori: {e}")
 
@@ -1085,11 +1095,15 @@ class TutorAgent:
         assistant_response: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if not self.memori_engine:
+        """Store conversation with Memori v3 attribution pattern."""
+        if not self.memori_engine or not self.memori_engine.is_initialized:
             logger.debug("Memori not enabled, skipping memory storage")
             return {"status": "skipped", "reason": "memori_disabled"}
 
         try:
+            # Set attribution for this user (required for Memori v3)
+            self.memori_engine.set_attribution(user_id)
+            
             result = self.memori_engine.store_conversation(
                 user_id=user_id,
                 user_message=user_message,
@@ -1108,7 +1122,8 @@ class TutorAgent:
         preference: str,
         category: str = "learning_preference",
     ) -> Dict[str, Any]:
-        if not self.memori_engine:
+        """Add user preference with Memori v3 attribution."""
+        if not self.memori_engine or not self.memori_engine.is_initialized:
             return {"status": "skipped", "reason": "memori_disabled"}
 
         try:
