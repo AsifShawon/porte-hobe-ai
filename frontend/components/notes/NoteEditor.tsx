@@ -14,7 +14,7 @@ import "katex/dist/katex.min.css";
 import { NoteToolbar } from "@/components/notes/NoteToolbar";
 
 interface NoteEditorProps {
-  noteId: string;
+  noteId?: string;
   initialContent: Record<string, unknown>;
   readOnly?: boolean;
   onSave: (content: Record<string, unknown>) => Promise<void>;
@@ -22,7 +22,7 @@ interface NoteEditorProps {
 
 const AUTOSAVE_DELAY_MS = 800;
 
-export function NoteEditor({ noteId, initialContent, readOnly, onSave }: NoteEditorProps) {
+export function NoteEditor({ initialContent, readOnly, onSave }: NoteEditorProps) {
   const editor = useEditor({
     extensions: [
       StarterKit.configure({

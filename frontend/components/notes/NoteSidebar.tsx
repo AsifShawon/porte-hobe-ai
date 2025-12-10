@@ -109,7 +109,7 @@ export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSid
     } else {
       params.set("folder", folderId);
     }
-    router.push(`/dashboard/learning?${params.toString()}`);
+    router.push(`/dashboard/resources/notes?${params.toString()}`);
   };
 
   const renderFolder = (node: FolderNode) => {
@@ -144,7 +144,7 @@ export function NoteSidebar({ notes, folders, onRefresh, onCreateNote }: NoteSid
             {folderNotes.map((note) => (
               <Link
                 key={note.id}
-                href={`/dashboard/learning/${note.id}`}
+                href={`/dashboard/resources/notes/${note.id}`}
                 className="block rounded px-2 py-1 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
               >
                 {note.title || "Untitled"}

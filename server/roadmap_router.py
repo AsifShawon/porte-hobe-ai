@@ -402,26 +402,92 @@ async def start_learning_milestone(
         roadmap = roadmap_result.data[0]
         roadmap_data = roadmap["roadmap_data"]
 
-        # Find the specific milestone
+        # Find the specific milestone (support both legacy and new schema)
         milestone_info = None
         phase_info = None
-        
-        for phase in roadmap_data.get("learning_phases", []):
-            if phase.get("phase_id") == phase_id:
+
+        phases = roadmap_data.get("phases") or roadmap_data.get("learning_phases") or []
+
+        def _normalize(s: Optional[str]) -> str:
+            return (s or "").strip().lower().replace(" ", "_")
+
+        # First try direct id match
+        for phase in phases:
+            current_phase_id = phase.get("id") or phase.get("phase_id")
+            if current_phase_id == phase_id:
                 phase_info = phase
                 for milestone in phase.get("milestones", []):
-                    if milestone.get("milestone_id") == milestone_id:
+                    current_milestone_id = milestone.get("id") or milestone.get("milestone_id")
+                    if current_milestone_id == milestone_id:
                         milestone_info = milestone
                         break
                 break
 
+        # Fallback: try normalized title matching and index-based matching
+        if not phase_info:
+            for idx, phase in enumerate(phases, start=1):
+                pid_norm = _normalize(phase.get("id") or phase.get("phase_id"))
+                ptitle_norm = _normalize(phase.get("title") or phase.get("phase_name"))
+                if phase_id == f"phase_{idx}" or _normalize(phase_id) in {pid_norm, ptitle_norm}:
+                    phase_info = phase
+                    break
+
+        if phase_info and not milestone_info:
+            milestones = phase_info.get("milestones", [])
+            for midx, ms in enumerate(milestones, start=1):
+                ms_id_norm = _normalize(ms.get("id") or ms.get("milestone_id"))
+                ms_title_norm = _normalize(ms.get("title"))
+                if milestone_id == f"lesson_{midx}" or milestone_id == f"quiz_{midx}" or _normalize(milestone_id) in {ms_id_norm, ms_title_norm}:
+                    milestone_info = ms
+                    break
+
         if not milestone_info:
+            # Fallback: use roadmap's current milestone if available
+            current_phase = roadmap.get("current_phase_id")
+            current_milestone = roadmap.get("current_milestone_id")
+            if current_phase and current_milestone:
+                for phase in phases:
+                    pid = phase.get("id") or phase.get("phase_id")
+                    if pid == current_phase:
+                        phase_info = phase
+                        for ms in phase.get("milestones", []):
+                            msid = ms.get("id") or ms.get("milestone_id")
+                            if msid == current_milestone:
+                                milestone_info = ms
+                                break
+                        break
+
+        if not milestone_info:
+            # Last resort: pick the first lesson milestone
+            for phase in phases:
+                if phase.get("milestones"):
+                    phase_info = phase
+                    for ms in phase.get("milestones", []):
+                        if (ms.get("type") or "lesson") == "lesson":
+                            milestone_info = ms
+                            break
+                    if milestone_info:
+                        break
+
+        if not milestone_info:
+            # Provide helpful diagnostics in error
+            available = []
+            for phase in phases:
+                pid = phase.get("id") or phase.get("phase_id")
+                for ms in phase.get("milestones", []):
+                    available.append({
+                        "phase_id": pid,
+                        "milestone_id": ms.get("id") or ms.get("milestone_id"),
+                        "title": ms.get("title")
+                    })
+            logger.warning(f"Milestone not found. Requested phase_id={phase_id}, milestone_id={milestone_id}. Available: {available}")
             raise HTTPException(status_code=404, detail="Milestone not found in roadmap")
 
         # Generate contextual chat prompt
         milestone_title = milestone_info.get("title", "")
         milestone_desc = milestone_info.get("description", "")
-        phase_name = phase_info.get("phase_name", "") if phase_info else ""
+        # New schema uses 'title' for phase name; legacy may have 'phase_name'
+        phase_name = (phase_info.get("title") or phase_info.get("phase_name") or "") if phase_info else ""
         roadmap_title = roadmap.get("title", "")
         
         # Create human-like prompt based on milestone type
