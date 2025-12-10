@@ -133,11 +133,12 @@ Return a JSON object:
     def __init__(self):
         """Initialize the quiz generator with local Ollama model"""
         self.llm = ChatOllama(
-            model="qwen2.5:3b-instruct-q5_K_M",
+            model="gemma3:4b",
             temperature=0.7,
-            num_predict=3072
+            num_predict=4096,  # Increased for quiz JSON generation
+            timeout=120  # 2 minute timeout for quiz generation
         )
-        logger.info("QuizGeneratorAgent initialized with local Ollama model")
+        logger.info("QuizGeneratorAgent initialized with gemma3:4b Ollama model")
 
     async def generate_quiz(
         self,
@@ -171,17 +172,19 @@ Return a JSON object:
                 topics=", ".join(topics),
                 difficulty=difficulty,
                 num_questions=num_questions,
-                conversation_context=conversation_context[:2000],  # Limit context size
+                conversation_context=conversation_context[:2000] if conversation_context else "General knowledge assessment",
                 learning_objectives=objectives_text
             )
 
             messages = [
                 SystemMessage(content=prompt),
-                HumanMessage(content=f"Generate a {difficulty} quiz with {num_questions} questions about: {', '.join(topics)}")
+                HumanMessage(content=f"Generate a {difficulty} quiz with exactly {num_questions} questions about: {', '.join(topics)}. Return ONLY valid JSON, no other text.")
             ]
 
             # Generate quiz
+            logger.info(f"Invoking LLM for quiz generation...")
             response = await self.llm.ainvoke(messages)
+            logger.info(f"LLM response received, parsing...")
             quiz_data = self._parse_quiz_response(response.content)
 
             # Validate and calculate totals

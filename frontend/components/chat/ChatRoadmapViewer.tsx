@@ -42,12 +42,14 @@ interface ChatRoadmapViewerProps {
   conversationId?: string | null;
   onMilestoneStart?: (phaseId: string, milestoneId: string) => void;
   onMilestoneComplete?: (phaseId: string, milestoneId: string, quizPassed?: boolean) => void;
+  onGeneratePrompt?: (prompt: string) => void;  // New: pass prompt to chat input
 }
 
 export function ChatRoadmapViewer({
   roadmapId,
   onMilestoneStart,
   onMilestoneComplete,
+  onGeneratePrompt,
 }: ChatRoadmapViewerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [completingMilestoneId, setCompletingMilestoneId] = useState<string | null>(null);
@@ -61,7 +63,6 @@ export function ChatRoadmapViewer({
     roadmap,
     loading,
     error,
-    startMilestone,
     completeMilestone,
     refetch,
   } = useRoadmap(roadmapId);
@@ -79,16 +80,25 @@ export function ChatRoadmapViewer({
     });
   }, []);
 
-  // Handle milestone start
-  const handleStartMilestone = useCallback(async (phaseId: string, milestoneId: string) => {
-    try {
-      await startMilestone(phaseId, milestoneId);
-      onMilestoneStart?.(phaseId, milestoneId);
-      await refetch();
-    } catch (err) {
-      console.error('Failed to start milestone:', err);
-    }
-  }, [startMilestone, onMilestoneStart, refetch]);
+  // Handle milestone start - generate learning prompt for chat input
+  const handleStartMilestone = useCallback((phase: Phase, milestone: Milestone) => {
+    // Generate a helpful learning prompt based on milestone
+    const topics = milestone.topics?.join(', ') || milestone.title;
+    const phaseContext = phase.title;
+    
+    const prompt = `I'd like to learn about "${milestone.title}" as part of the "${phaseContext}" phase. ${
+      milestone.topics && milestone.topics.length > 0 
+        ? `Please help me understand these key topics: ${topics}.` 
+        : `Please explain the key concepts and provide examples.`
+    } Let me know when I should practice or try exercises!`;
+    
+    // Pass the prompt to the chat input
+    onGeneratePrompt?.(prompt);
+    onMilestoneStart?.(phase.id, milestone.id);
+    
+    // Close the roadmap panel so user can see the chat
+    setIsOpen(false);
+  }, [onGeneratePrompt, onMilestoneStart]);
 
   // Handle milestone completion checkbox
   const handleMarkComplete = useCallback((phase: Phase, milestone: Milestone) => {
@@ -287,7 +297,7 @@ export function ChatRoadmapViewer({
                                     phase={phase}
                                     index={milestoneIndex}
                                     isCompleting={completingMilestoneId === milestone.id}
-                                    onStart={() => handleStartMilestone(phase.id, milestone.id)}
+                                    onStart={() => handleStartMilestone(phase, milestone)}
                                     onMarkComplete={() => handleMarkComplete(phase, milestone)}
                                   />
                                 ))}

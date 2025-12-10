@@ -821,13 +821,39 @@ async def delete_messages(
         logger.info(f"🗑️ Attempting to delete {len(request.messageIds)} messages")
         
         # Delete messages by IDs for this user only
+        # Messages come from chat_messages table (UUID ids), so we need to:
+        # 1. Find sessions that belong to this user
+        # 2. Delete messages from those sessions
         deleted_count = 0
         for message_id in request.messageIds:
             try:
-                result = supabase.table("chat_history")\
+                # Get the message's session to verify ownership
+                msg_query = supabase.table("chat_messages")\
+                    .select("id, session_id")\
+                    .eq("id", str(message_id))\
+                    .execute()
+                
+                if not msg_query.data:
+                    logger.debug(f"Message {message_id} not found in chat_messages")
+                    continue
+                
+                session_id = msg_query.data[0]["session_id"]
+                
+                # Verify the session belongs to this user
+                session_query = supabase.table("chat_sessions")\
+                    .select("id")\
+                    .eq("id", session_id)\
+                    .eq("user_id", user["user_id"])\
+                    .execute()
+                
+                if not session_query.data:
+                    logger.warning(f"Session {session_id} not owned by user, skipping message {message_id}")
+                    continue
+                
+                # Delete the message
+                result = supabase.table("chat_messages")\
                     .delete()\
                     .eq("id", str(message_id))\
-                    .eq("user_id", user["user_id"])\
                     .execute()
                 deleted_count += 1
                 logger.debug(f"Deleted message {message_id}")

@@ -68,6 +68,7 @@ export function ChatMilestoneQuiz({
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quizError, setQuizError] = useState<string | null>(null);
   const [results, setResults] = useState<{
     score: number;
     total: number;
@@ -85,12 +86,14 @@ export function ChatMilestoneQuiz({
       setCurrentQuestionIndex(0);
       setAnswers({});
       setResults(null);
+      setQuizError(null);
     }
   }, [open]);
 
   // Handle quiz generation
   const handleStartQuiz = useCallback(async () => {
     setIsLoading(true);
+    setQuizError(null);
     try {
       const topics = milestone.topics || [milestone.title];
       const generatedQuiz = await generateQuiz({
@@ -105,15 +108,19 @@ export function ChatMilestoneQuiz({
       if (generatedQuiz) {
         setQuiz(generatedQuiz);
         setStage('quiz');
+      } else {
+        setQuizError('Failed to generate quiz. The AI might be busy. You can skip this quiz or try again.');
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to generate quiz:', err);
-      // On error, allow skipping
-      onSkip();
+      const errorMessage = err instanceof Error ? err.message : 
+        (typeof err === 'object' && err !== null && 'detail' in err) ? String((err as {detail: unknown}).detail) :
+        'Quiz generation failed. Please try again or skip.';
+      setQuizError(errorMessage);
     } finally {
       setIsLoading(false);
     }
-  }, [generateQuiz, milestone, phaseId, roadmapId, onSkip]);
+  }, [generateQuiz, milestone, phaseId, roadmapId]);
 
   // Handle answer change
   const handleAnswerChange = useCallback((questionId: string, answer: string) => {
@@ -243,6 +250,17 @@ export function ChatMilestoneQuiz({
                   </ul>
                 </CardContent>
               </Card>
+
+              {/* Error Display */}
+              {quizError && (
+                <Card className="border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20 mt-3">
+                  <CardContent className="pt-4">
+                    <p className="text-sm text-red-600 dark:text-red-400">
+                      {quizError}
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
             </div>
 
             <DialogFooter className="flex-col sm:flex-row gap-2">
@@ -263,6 +281,11 @@ export function ChatMilestoneQuiz({
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Generating Quiz...
+                  </>
+                ) : quizError ? (
+                  <>
+                    <Target className="h-4 w-4 mr-2" />
+                    Try Again
                   </>
                 ) : (
                   <>

@@ -20,12 +20,28 @@ import type {
 class QuizApiClient extends ApiClient {
   /**
    * Generate a new quiz based on topics
+   * Uses Next.js API route proxy for better error handling
    */
   async generateQuiz(request: GenerateQuizRequest): Promise<GenerateQuizResponse> {
-    return this.request<GenerateQuizResponse>('/api/quizzes/generate', {
+    // Use the Next.js API proxy route instead of direct backend call
+    const response = await fetch('/api/quizzes/generate', {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(request),
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw {
+        status: response.status,
+        message: errorData.error || 'Failed to generate quiz',
+        detail: errorData.detail,
+      };
+    }
+
+    return response.json();
   }
 
   /**

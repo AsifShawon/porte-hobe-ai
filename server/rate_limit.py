@@ -19,7 +19,9 @@ if _REDIS_URL:
     except Exception:
         _redis = None
 
-from fastapi import HTTPException, status
+from fastapi import Depends, HTTPException, status
+
+from auth import get_current_user
 
 
 class FixedWindowLimiter:
@@ -45,7 +47,20 @@ class FixedWindowLimiter:
 _memory_limiter = FixedWindowLimiter(max_requests=20, window_seconds=60)  # 20 req/min
 
 
-def limit_user(user_id: str) -> None:
+def limit_user(user) -> None:
+    """FastAPI dependency that rate-limits based on authenticated user.
+    
+    Args:
+        user: Either a user dict with 'user_id' key, or a string user_id directly
+    """
+    # Handle both dict and string inputs
+    if isinstance(user, str):
+        user_id = user
+    elif isinstance(user, dict):
+        user_id = user.get("user_id", user.get("id", "anonymous"))
+    else:
+        user_id = "anonymous"
+        
     if _redis is None:
         _memory_limiter.check(user_id)
         return

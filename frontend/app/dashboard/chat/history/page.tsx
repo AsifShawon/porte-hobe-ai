@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
-import { Bot, User, MessageSquare, Search, Trash2, Plus, ArrowLeft, Map } from "lucide-react"
+import { Bot, User, MessageSquare, Search, Trash2, Plus, ArrowLeft, Map as MapIcon } from "lucide-react"
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -339,7 +339,7 @@ export default function ChatHistoryPage() {
                     </span>
                     {conversation.roadmap_id && (
                       <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
-                        <Map className="h-3 w-3" />
+                        <MapIcon className="h-3 w-3" />
                         Roadmap linked
                       </span>
                     )}

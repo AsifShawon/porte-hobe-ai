@@ -1036,8 +1036,13 @@ Continue our conversation here while tracking your progress!`,
       <ChatRoadmapViewer
         roadmapId={linkedRoadmapId || milestoneRoadmapId}
         conversationId={conversationId}
+        onGeneratePrompt={(prompt) => {
+          // Set the prompt in the chat input and focus it
+          setInput(prompt)
+          inputRef.current?.focus()
+        }}
         onMilestoneStart={(phaseId, milestoneId) => {
-          console.log('Milestone started:', phaseId, milestoneId)
+          console.log('Milestone learning started:', phaseId, milestoneId)
         }}
         onMilestoneComplete={(phaseId, milestoneId, quizPassed) => {
           console.log('Milestone completed:', phaseId, milestoneId, 'Quiz passed:', quizPassed)

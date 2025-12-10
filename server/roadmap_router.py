@@ -344,6 +344,8 @@ async def update_milestone_progress(
         # Check for quiz triggers if milestone was just completed
         quiz_trigger = None
         if request.status == "completed":
+            # Unlock the next milestone
+            await _unlock_next_milestone(user_id, roadmap_id, phase_id, milestone_id)
             quiz_trigger = await _check_quiz_triggers(user_id, roadmap_id, phase_id, milestone_id)
 
         response = {
@@ -814,6 +816,111 @@ async def _recalculate_roadmap_progress(roadmap_id: str):
         raise
     except Exception as e:
         logger.error(f"Error recalculating progress: {e}")
+
+
+async def _unlock_next_milestone(user_id: str, roadmap_id: str, completed_phase_id: str, completed_milestone_id: str):
+    """
+    Unlock the next milestone after one is completed.
+    This handles unlocking within the same phase and across phases.
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Get the roadmap to understand milestone structure
+        roadmap_result = supabase.table("learning_roadmaps")\
+            .select("*")\
+            .eq("id", roadmap_id)\
+            .single()\
+            .execute()
+
+        if not roadmap_result.data:
+            return
+
+        roadmap = roadmap_result.data
+        roadmap_data = roadmap.get("roadmap_data", {})
+        phases = roadmap_data.get("phases", [])
+
+        # Find the completed milestone and the next one to unlock
+        next_milestone_to_unlock = None
+        next_phase_id = None
+        found_completed = False
+
+        for phase_idx, phase in enumerate(phases):
+            phase_id = phase.get("id")
+            milestones = phase.get("milestones", [])
+
+            for milestone_idx, milestone in enumerate(milestones):
+                milestone_id = milestone.get("id")
+
+                if found_completed:
+                    # This is the next milestone after the completed one
+                    next_milestone_to_unlock = milestone
+                    next_phase_id = phase_id
+                    break
+
+                if phase_id == completed_phase_id and milestone_id == completed_milestone_id:
+                    found_completed = True
+                    # Check if there's a next milestone in the same phase
+                    if milestone_idx + 1 < len(milestones):
+                        next_milestone_to_unlock = milestones[milestone_idx + 1]
+                        next_phase_id = phase_id
+                        break
+
+            if next_milestone_to_unlock:
+                break
+
+            # If we found the completed milestone but no next in same phase,
+            # continue to next phase
+            if found_completed and phase_idx + 1 < len(phases):
+                next_phase = phases[phase_idx + 1]
+                if next_phase.get("milestones"):
+                    next_milestone_to_unlock = next_phase["milestones"][0]
+                    next_phase_id = next_phase.get("id")
+                    break
+
+        if not next_milestone_to_unlock or not next_phase_id:
+            logger.info(f"No next milestone to unlock after {completed_milestone_id}")
+            return
+
+        next_milestone_id = next_milestone_to_unlock.get("id")
+
+        # Check current status of next milestone
+        progress_check = supabase.table("milestone_progress")\
+            .select("status")\
+            .eq("user_id", user_id)\
+            .eq("roadmap_id", roadmap_id)\
+            .eq("milestone_id", next_milestone_id)\
+            .execute()
+
+        current_status = progress_check.data[0]["status"] if progress_check.data else "locked"
+
+        # Only unlock if currently locked
+        if current_status == "locked":
+            supabase.table("milestone_progress")\
+                .upsert({
+                    "user_id": user_id,
+                    "roadmap_id": roadmap_id,
+                    "phase_id": next_phase_id,
+                    "milestone_id": next_milestone_id,
+                    "milestone_title": next_milestone_to_unlock.get("title"),
+                    "milestone_type": next_milestone_to_unlock.get("type"),
+                    "status": "not_started",
+                    "progress_percentage": 0.0
+                }, on_conflict="user_id,roadmap_id,phase_id,milestone_id")\
+                .execute()
+
+            # Also update the current milestone pointer in the roadmap
+            supabase.table("learning_roadmaps").update({
+                "current_phase_id": next_phase_id,
+                "current_milestone_id": next_milestone_id
+            }).eq("id", roadmap_id).execute()
+
+            logger.info(f"Unlocked milestone {next_milestone_id} in phase {next_phase_id}")
+        else:
+            logger.info(f"Milestone {next_milestone_id} already unlocked (status: {current_status})")
+
+    except Exception as e:
+        logger.error(f"Error unlocking next milestone: {e}", exc_info=True)
 
 
 async def _check_quiz_triggers(user_id: str, roadmap_id: str, completed_phase_id: str, completed_milestone_id: str) -> Optional[Dict[str, Any]]:
